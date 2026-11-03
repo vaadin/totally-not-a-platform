@@ -248,8 +248,9 @@ jobs:
         run: |
           mkdir -p ~/.vaadin
           printf '{"username":"%s","proKey":"%s"}' "${VAADIN_PRO_KEY%%/*}" "${VAADIN_PRO_KEY#*/}" > ~/.vaadin/proKey
-      # surefire.timeout kills a test JVM that hangs, so the run names the
-      # module instead of the job timing out with nothing to show.
+      # surefire.timeout limits each module's test JVM to 10 minutes in total,
+      # so a hung test fails its module by name instead of the job timing
+      # out. The whole unit test run takes about 5 minutes.
       - name: Run unit tests
         run: |
           mvn test -Drelease -Dflow.version="$BUILD_VERSION" -DskipSvgChartsBuild \
