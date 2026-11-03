@@ -2,7 +2,7 @@
   "flow": {
     "repo": "vaadin/flow",
     "ref": "main",
-    "greenWorkflow": "Flow Validation"
+    "greenWorkflow": "validation.yml"
   },
   "platform": {
     "repo": "vaadin/platform",
