@@ -103,9 +103,12 @@ jobs:
       - name: Generate the unit test matrix
         id: matrix
         run: echo "matrix-unit=$(./scripts/computeMatrix.js unit-tests --parallel=4 current module args)" >> "$GITHUB_OUTPUT"
+      # Unlike Flow's validation.yml, flow-gradle-plugin stays in: Platform's
+      # Gradle plugin depends on it. -Drelease leaves out flow-tests, which
+      # holds only integration tests, as Flow's pr-snapshot.yml does.
       - name: Compile and install Flow
         run: |
-          cmd="mvn install -DskipTests -pl !flow-plugins/flow-gradle-plugin"
+          cmd="mvn install -DskipTests -Drelease"
           $cmd -T 2C -q || $cmd
       # Two artifacts: the installed Flow jars, which the platform job builds
       # against, and the build output, which the unit test jobs reuse.
