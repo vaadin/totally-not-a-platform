@@ -4,6 +4,10 @@
     "ref": "main",
     "greenWorkflow": "validation.yml"
   },
+  "flow-components": {
+    "repo": "vaadin/flow-components",
+    "ref": "main"
+  },
   "platform": {
     "repo": "vaadin/platform",
     "ref": "main"

@@ -1,13 +1,15 @@
 name: Validate
 
 # Pins one commit of every component in config/components.json, builds it,
-# runs its unit tests and records the result in manifest.json. Platform is
-# built against the Flow commit pinned here, not against a published Flow.
+# runs its unit tests and records the result in manifest.json. Each component
+# is built against the ones before it as pinned here, not against published
+# versions: Flow Components against Flow, Platform against both.
 #
 # Flow resolves to its newest commit that already passed Flow's own
 # validation, so it is built without running its tests again.
 #
-#   resolve ── flow-build ── platform ── manifest
+#   resolve ── flow-build ── flow-components-build ─┬─ flow-components-unit-tests ─┬─ manifest
+#                                                   └─ platform ───────────────────┘
 #
 # Nothing is published: the only output is the manifest.json artifact.
 
@@ -16,6 +18,10 @@ on:
     inputs:
       flow-ref:
         description: vaadin/flow branch, tag or commit (empty = config/components.json)
+        required: false
+        default: ''
+      flow-components-ref:
+        description: vaadin/flow-components branch, tag or commit (empty = config/components.json)
         required: false
         default: ''
       platform-ref:
@@ -35,10 +41,11 @@ permissions:
   contents: read
 
 env:
-  # Versions the Flow and Platform reactors are rewritten to, the same ones
-  # their own CI uses. Neither is ever published, so Maven can only resolve
-  # them from what this run built, never from a repository.
-  FLOW_BUILD_VERSION: 999.99-SNAPSHOT
+  # Versions the reactors are rewritten to: BUILD_VERSION for every component
+  # Platform depends on (the one Flow's own CI uses), PLATFORM_BUILD_VERSION
+  # for Platform (the one its CI uses). Neither is ever published, so Maven
+  # can only resolve them from what this run built, never from a repository.
+  BUILD_VERSION: 999.99-SNAPSHOT
   PLATFORM_BUILD_VERSION: 99.0-SNAPSHOT
   # Same retries Flow's validation passes; see vaadin/flow validation.yml.
   MAVEN_ARGS: >-
@@ -54,6 +61,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       flow-sha: ${{ steps.resolve.outputs.flow-sha }}
+      flow-components-sha: ${{ steps.resolve.outputs.flow-components-sha }}
       platform-sha: ${{ steps.resolve.outputs.platform-sha }}
     steps:
       # Platform's production bundles need a Vaadin licence (the commercial
@@ -74,8 +82,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           FLOW_REF: ${{ inputs.flow-ref }}
+          FLOW_COMPONENTS_REF: ${{ inputs.flow-components-ref }}
           PLATFORM_REF: ${{ inputs.platform-ref }}
-        run: node scripts/resolve-commits.js --flow-ref="$FLOW_REF" --platform-ref="$PLATFORM_REF" --out=commits.json
+        run: |
+          node scripts/resolve-commits.js --out=commits.json \
+            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --platform-ref="$PLATFORM_REF"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commits
@@ -107,9 +118,9 @@ jobs:
       # Flow builds from earlier runs end up in the cache; only this run's
       # build may be handed on.
       - name: Purge earlier Flow builds from the local repo
-        run: rm -rf ~/.m2/repository/com/vaadin/*/"$FLOW_BUILD_VERSION"
-      - name: Set Flow version to ${{ env.FLOW_BUILD_VERSION }}
-        run: ./scripts/computeMatrix.js set-version --version="$FLOW_BUILD_VERSION"
+        run: rm -rf ~/.m2/repository/com/vaadin/*/"$BUILD_VERSION"
+      - name: Set Flow version to ${{ env.BUILD_VERSION }}
+        run: ./scripts/computeMatrix.js set-version --version="$BUILD_VERSION"
       # Unlike Flow's validation.yml, flow-gradle-plugin stays in: Platform's
       # Gradle plugin depends on it. -Drelease leaves out flow-tests, which
       # holds only integration tests, as Flow's pr-snapshot.yml does.
@@ -117,10 +128,10 @@ jobs:
         run: |
           cmd="mvn install -DskipTests -Drelease"
           $cmd -T 2C -q || $cmd
-      # The installed Flow jars, which the platform job builds against.
+      # The installed Flow jars, which the jobs after this one build against.
       - name: Pack the build
         run: |
-          (cd ~/.m2/repository && find com/vaadin -mindepth 2 -maxdepth 2 -type d -name "$FLOW_BUILD_VERSION") \
+          (cd ~/.m2/repository && find com/vaadin -mindepth 2 -maxdepth 2 -type d -name "$BUILD_VERSION") \
             | tar cf flow-maven-artifacts.tar -C ~/.m2/repository -T -
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -129,9 +140,129 @@ jobs:
           compression-level: 0
           retention-days: 1
 
+  # Mirrors the `build` job of vaadin/flow-components validation.yml, against
+  # the Flow built above. Installs without tests: the tests run in the job
+  # after this one, in parallel with Platform, which builds against this.
+  flow-components-build:
+    name: Build Flow Components
+    needs: [resolve, flow-build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: vaadin/flow-components
+          ref: ${{ needs.resolve.outputs.flow-components-sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+      - &restore-vaadin-builds
+        name: Purge Vaadin artifacts from the local repo
+        run: rm -rf ~/.m2/repository/com/vaadin
+      - &download-flow
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-maven-artifacts
+      - &install-flow
+        name: Install the Flow build into the local repo
+        run: |
+          mkdir -p ~/.m2/repository
+          tar xf flow-maven-artifacts.tar -C ~/.m2/repository
+          tar tf flow-maven-artifacts.tar | cut -d/ -f1-3 | sort -u | sed 's|$|/|' > "$RUNNER_TEMP/flow-artifacts.txt"
+          rm flow-maven-artifacts.tar
+      - &set-flow-components-version
+        name: Set Flow Components version to ${{ env.BUILD_VERSION }}
+        run: |
+          mvn -q org.codehaus.mojo:versions-maven-plugin:2.22.0:set \
+            -DnewVersion="$BUILD_VERSION" -DprocessAllModules=true -DgenerateBackupPoms=false
+      # -Drelease leaves out the integration test modules; -Dflow.version
+      # points every module at the Flow build.
+      - name: Compile and install Flow Components
+        run: |
+          cmd="mvn install -Dmaven.test.skip=true -Drelease -Dflow.version=$BUILD_VERSION"
+          $cmd -T 1C || { echo "::warning::Retrying without parallelism"; $cmd; }
+      # The Flow Components jars (the Flow ones at the same version are left
+      # out, they travel in their own artifact), plus the charts SVG generator
+      # output, which the unit test job would otherwise rebuild.
+      - name: Pack the build
+        run: |
+          (cd ~/.m2/repository && find com/vaadin -mindepth 2 -maxdepth 2 -type d -name "$BUILD_VERSION") \
+            | grep -vFf "$RUNNER_TEMP/flow-artifacts.txt" \
+            | tar cf flow-components-maven-artifacts.tar -C ~/.m2/repository -T -
+          tar cf flow-components-generated.tar vaadin-charts-flow-parent/vaadin-charts-flow-svg-generator/src/main/resources/META-INF/frontend/generated
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flow-components-maven-artifacts
+          path: flow-components-maven-artifacts.tar
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flow-components-generated
+          path: flow-components-generated.tar
+          retention-days: 1
+
+  # Mirrors the unit test step of vaadin/flow-components validation.yml.
+  # `mvn test`, so no integration tests run.
+  flow-components-unit-tests:
+    name: Flow Components unit tests
+    needs: [resolve, flow-build, flow-components-build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: vaadin/flow-components
+          ref: ${{ needs.resolve.outputs.flow-components-sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+      - *restore-vaadin-builds
+      - *download-flow
+      - *install-flow
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-components-maven-artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-components-generated
+      - name: Restore the Flow Components build
+        run: |
+          tar xf flow-components-maven-artifacts.tar -C ~/.m2/repository
+          tar xf flow-components-generated.tar
+          rm flow-components-*.tar
+      - *set-flow-components-version
+      - name: Install the Vaadin licence
+        env:
+          VAADIN_PRO_KEY: ${{ secrets.VAADIN_PRO_KEY }}
+        run: |
+          mkdir -p ~/.vaadin
+          printf '{"username":"%s","proKey":"%s"}' "${VAADIN_PRO_KEY%%/*}" "${VAADIN_PRO_KEY#*/}" > ~/.vaadin/proKey
+      - name: Run unit tests
+        run: |
+          mvn test -Drelease -Dflow.version="$BUILD_VERSION" -DskipSvgChartsBuild \
+            -T 1C -Dsurefire.parallel=classes -Dsurefire.threadCount=2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: flow-components-test-reports
+          if-no-files-found: ignore
+          retention-days: 7
+          path: '**/target/surefire-reports/*.xml'
+
   # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
-  # differences: versions.json points Flow at the commit built above, and the
-  # unit tests run. `install`, not `test` or `package`: vaadin-dev-bundle
+  # differences: versions.json points Flow and Flow Components at the builds
+  # above, and the unit tests run. `install`, not `test` or `package`: vaadin-dev-bundle
   # unpacks a sibling module's packaged jar, and vaadin-gradle-plugin's
   # nested Gradle build resolves the bundles from the local repository. No
   # integration tests run all the same: they live only in the
@@ -139,7 +270,7 @@ jobs:
   # are not enabled here.
   platform:
     name: Build and test Platform
-    needs: [resolve, flow-build]
+    needs: [resolve, flow-build, flow-components-build]
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
@@ -168,17 +299,29 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: flow-maven-artifacts
-      - name: Install the Flow build into the local repo
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-components-maven-artifacts
+      - name: Install the Flow and Flow Components builds into the local repo
         run: |
           mkdir -p ~/.m2/repository
           tar xf flow-maven-artifacts.tar -C ~/.m2/repository
-          rm flow-maven-artifacts.tar
-      - name: Point versions.json at Flow ${{ env.FLOW_BUILD_VERSION }}
+          tar xf flow-components-maven-artifacts.tar -C ~/.m2/repository
+          rm flow-*.tar
+      # Flow Components entries are "{{version}}" (they follow the Platform
+      # version) in versions.json; every core one of them is a Flow
+      # Components module.
+      - name: Point versions.json at the builds above
         run: |
           node -e '
             const fs = require("fs");
             const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
-            versions.core.flow.javaVersion = process.env.FLOW_BUILD_VERSION;
+            versions.core.flow.javaVersion = process.env.BUILD_VERSION;
+            for (const component of Object.values(versions.core)) {
+              if (component.javaVersion === "{{version}}") {
+                component.javaVersion = process.env.BUILD_VERSION;
+              }
+            }
             fs.writeFileSync("versions.json", JSON.stringify(versions, null, 4) + "\n");
           '
           git diff versions.json
@@ -208,7 +351,7 @@ jobs:
 
   manifest:
     name: Write manifest
-    needs: [resolve, flow-build, platform]
+    needs: [resolve, flow-build, flow-components-build, flow-components-unit-tests, platform]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -222,6 +365,7 @@ jobs:
           RESULTS: >-
             {
               "flow": ["${{ needs.flow-build.result }}"],
+              "flow-components": ["${{ needs.flow-components-build.result }}", "${{ needs.flow-components-unit-tests.result }}"],
               "platform": ["${{ needs.platform.result }}"]
             }
         run: node scripts/write-manifest.js --commits=commits.json --results="$RESULTS" --out=manifest.json
