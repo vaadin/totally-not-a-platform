@@ -1,0 +1,11 @@
+{
+  "flow": {
+    "repo": "vaadin/flow",
+    "ref": "main",
+    "sentinelCheck": "test-results"
+  },
+  "platform": {
+    "repo": "vaadin/platform",
+    "ref": "main"
+  }
+}

@@ -1,0 +1,294 @@
+name: Assemble Platform Snapshot
+
+# From ready code to a validated platform snapshot in one run:
+#
+#   resolve ──> build-flow ──> assemble-platform
+#
+# resolve finds the newest green commit of vaadin/flow main (its merge-queue
+# validation passed). build-flow checks that exact commit out and builds it as
+# the regular X.Y-SNAPSHOT, skipping the tests that already passed for this
+# SHA. assemble-platform pins flow to that snapshot in vaadin/platform's
+# versions.json, generates the BOM set, builds it against the just-built flow
+# and runs the platform's fast validations.
+#
+# Nothing is deployed yet: the flow artifacts travel to the platform job as a
+# workflow artifact, and the platform resolves them from the local Maven
+# repository (-nsu keeps the remote TeamCity snapshot from shadowing them).
+# Deploying to the snapshot repository and publishing the manifest is the next
+# step once this validation pipeline has proven itself; the scripts for it
+# (snapshot-id.js, write-manifest.js) are already in place.
+
+on:
+  workflow_dispatch:
+    inputs:
+      flow-ref:
+        description: vaadin/flow commit or ref to build, skipping the green resolver
+        required: false
+        default: ''
+      platform-ref:
+        description: vaadin/platform ref to assemble from
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.green.outputs.sha || steps.override.outputs.sha }}
+      checks-url: ${{ steps.green.outputs.checks-url || steps.override.outputs.checks-url }}
+      changed: ${{ steps.gate.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve the flow-ref override
+        if: ${{ inputs.flow-ref != '' }}
+        id: override
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLOW_REF: ${{ inputs.flow-ref }}
+        run: |
+          sha=$(gh api "repos/vaadin/flow/commits/$FLOW_REF" --jq .sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "checks-url=https://github.com/vaadin/flow/commit/$sha/checks" >> "$GITHUB_OUTPUT"
+          echo "Building vaadin/flow@$sha (explicit override, greenness not checked)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Find the latest green flow commit
+        if: ${{ inputs.flow-ref == '' }}
+        id: green
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          result=$(node scripts/find-green-flow.js --component=flow)
+          echo "sha=$(jq -r .sha <<< "$result")" >> "$GITHUB_OUTPUT"
+          echo "checks-url=$(jq -r .checksUrl <<< "$result")" >> "$GITHUB_OUTPUT"
+          echo "Latest green vaadin/flow commit: $(jq -r .shortSha <<< "$result") ([checks]($(jq -r .checksUrl <<< "$result")))" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check whether anything changed since the last snapshot
+        # The no-op gate for the future cron trigger: when the resolved commit
+        # is the one the last manifest already records, there is nothing new to
+        # assemble. An explicit flow-ref override always builds, because the
+        # dispatch asked for that commit on purpose.
+        id: gate
+        env:
+          SHA: ${{ steps.green.outputs.sha || steps.override.outputs.sha }}
+          OVERRIDDEN: ${{ inputs.flow-ref != '' }}
+        run: |
+          last=$(jq -r '.components.flow.gitHash // empty' manifests/latest.json 2>/dev/null || true)
+          if [ "$OVERRIDDEN" = "false" ] && [ -n "$last" ] && [ "$last" = "$SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No-op: the latest green flow commit is already in the last snapshot (manifests/latest.json)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-flow:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: vaadin/flow
+          ref: ${{ needs.resolve.outputs.sha }}
+          path: flow
+      - uses: ./flow/.github/actions/setup-frontend-tools
+        with:
+          cache: npm
+          cache-dependency-path: flow/flow-client/package-lock.json
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version-file: flow/.tool-versions
+          distribution: temurin
+      - uses: actions/cache/restore@v5
+        id: m2
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-flow-${{ hashFiles('flow/**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-flow-
+      - name: Read the flow version
+        id: version
+        working-directory: flow
+        run: |
+          set -o pipefail
+          version=$(mvn -q -N -B -ntp org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate \
+            -Dexpression=project.version -DforceStdout | tail -1)
+          case "$version" in
+            [0-9]*-SNAPSHOT) ;;
+            *) echo "Read '$version' from the flow root pom instead of a snapshot version"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build the flow snapshot
+        working-directory: flow
+        # Same reactor as flow's own pr-snapshot.yml: -Drelease leaves the
+        # flow-tests modules out. Installed locally rather than deployed; the
+        # jars are handed to the platform job below.
+        run: mvn install -B -ntp -DskipTests -Drelease
+      - name: Pack the built artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        # Everything com.vaadin at the snapshot version in the local repository
+        # is exactly what the flow build just installed, metadata included.
+        run: |
+          cd ~/.m2/repository
+          find com/vaadin -type d -name "$VERSION" | tar -czf "$RUNNER_TEMP/flow-m2.tgz" -T -
+      - uses: actions/upload-artifact@v6
+        with:
+          name: flow-m2
+          path: ${{ runner.temp }}/flow-m2.tgz
+          retention-days: 2
+      - name: Prune snapshots from the Maven cache
+        # A cached com.vaadin snapshot from an earlier run would be stale by
+        # definition. Skipped on an exact key hit, where the entry already
+        # holds what this run would save.
+        if: ${{ steps.m2.outputs.cache-hit != 'true' }}
+        run: find ~/.m2/repository/com/vaadin -type d -name "*-SNAPSHOT" -prune -exec rm -rf {} + 2>/dev/null || true
+      - uses: actions/cache/save@v5
+        if: ${{ steps.m2.outputs.cache-hit != 'true' }}
+        with:
+          path: ~/.m2/repository
+          key: ${{ steps.m2.outputs.cache-primary-key }}
+
+  assemble-platform:
+    needs: [resolve, build-flow]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: vaadin/platform
+          ref: ${{ inputs.platform-ref || 'main' }}
+          path: platform
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - uses: actions/cache/restore@v5
+        id: m2
+        # The key is computed here, before patch-versions.js rewrites
+        # versions.json; the save below reuses it through cache-primary-key.
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-platform-${{ hashFiles('platform/versions.json') }}
+          restore-keys: ${{ runner.os }}-maven-platform-
+      - uses: actions/cache@v5
+        # The npm content-addressed cache cannot go stale, so the plain
+        # restore-and-save action is enough for it.
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-platform-${{ hashFiles('platform/versions.json') }}
+          restore-keys: ${{ runner.os }}-npm-platform-
+      - uses: actions/download-artifact@v7
+        with:
+          name: flow-m2
+          path: ${{ runner.temp }}
+      - name: Install the flow artifacts into the local repository
+        run: |
+          mkdir -p ~/.m2/repository
+          tar -xzf "$RUNNER_TEMP/flow-m2.tgz" -C ~/.m2/repository
+      - name: Read the platform version
+        id: version
+        working-directory: platform
+        run: |
+          set -o pipefail
+          version=$(mvn -q -N -B -ntp org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate \
+            -Dexpression=project.version -DforceStdout | tail -1)
+          case "$version" in
+            [0-9]*-SNAPSHOT) ;;
+            *) echo "Read '$version' from the platform root pom instead of a snapshot version"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Pre-fetch the component jars of the platform version
+        # The generator reads the npm versions each component pins from
+        # META-INF/VAADIN/versions/ of the jars in the local Maven repository.
+        # The umbrella vaadin pom depends on every component jar, so resolving
+        # it transitively puts them all there. -nsu keeps the remote snapshot
+        # repository from shadowing the flow jars installed above.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mvn -B -ntp -nsu -f config/prefetch-pom.xml dependency:get \
+            -Dartifact=com.vaadin:vaadin:$VERSION:pom
+      - name: Pin flow to the just-built snapshot
+        env:
+          FLOW_VERSION: ${{ needs.build-flow.outputs.version }}
+        run: node scripts/patch-versions.js --file=platform/versions.json --flow-version="$FLOW_VERSION"
+      - name: Generate the BOM set
+        working-directory: platform
+        # The generator only warns when the pre-fetched jars are missing and
+        # then writes an @vaadin/vaadin-core that depends on almost nothing,
+        # so the warning is turned into a failure here.
+        run: |
+          set -o pipefail
+          ./scripts/generateBoms.sh 2>&1 | tee generate.log
+          if grep -q "No jar of version" generate.log; then
+            echo "The generator found no jars pinning npm versions, the pre-fetch did not work" | tee -a $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+      - name: Validate the npm dependency tree
+        working-directory: platform
+        # verifyNpmDependencies.sh was removed from platform main at some
+        # point, so it only runs where the checked-out ref still carries it.
+        run: |
+          node scripts/validateVersions.js
+          if [ -f scripts/verifyNpmDependencies.sh ]; then
+            ./scripts/verifyNpmDependencies.sh
+          else
+            echo "scripts/verifyNpmDependencies.sh not present on this platform ref, skipped"
+          fi
+      - name: Install TestBench license
+        # vaadin-prod-bundle-unoptimized builds its frontend bundle without
+        # optimization, so every commercial component on the classpath counts
+        # as used and the Vaadin plugin checks for a license at build time.
+        # Same step as flow-components' validation.yml: TB_LICENSE is
+        # user/key, written as the ~/.vaadin/proKey file.
+        if: env.TB_LICENSE != ''
+        env:
+          TB_LICENSE: ${{ secrets.TB_LICENSE }}
+        run: |
+          mkdir -p ~/.vaadin
+          user="${TB_LICENSE%%/*}"
+          key="${TB_LICENSE#*/}"
+          echo "{\"username\":\"${user}\",\"proKey\":\"${key}\"}" > ~/.vaadin/proKey
+      - name: Build the platform
+        working-directory: platform
+        run: mvn install -B -ntp -nsu -Doss -DskipTests
+      - name: Check for non-pinned dependencies
+        working-directory: platform
+        run: ./scripts/checkForNonPinnedDependencies.sh
+      - name: Prune snapshots from the Maven cache
+        # A cached com.vaadin snapshot from an earlier run would be stale by
+        # definition, and -nsu above would then keep using it forever.
+        if: ${{ steps.m2.outputs.cache-hit != 'true' }}
+        run: find ~/.m2/repository/com/vaadin -type d -name "*-SNAPSHOT" -prune -exec rm -rf {} + 2>/dev/null || true
+      - uses: actions/cache/save@v5
+        if: ${{ steps.m2.outputs.cache-hit != 'true' }}
+        with:
+          path: ~/.m2/repository
+          key: ${{ steps.m2.outputs.cache-primary-key }}
+      - name: Summarize
+        env:
+          PLATFORM_VERSION: ${{ steps.version.outputs.version }}
+          FLOW_VERSION: ${{ needs.build-flow.outputs.version }}
+          FLOW_SHA: ${{ needs.resolve.outputs.sha }}
+          FLOW_CHECKS_URL: ${{ needs.resolve.outputs.checks-url }}
+        run: |
+          {
+            echo "## Platform \`$PLATFORM_VERSION\` validated"
+            echo ""
+            echo "| Component | Version | Commit | Evidence |"
+            echo "|-----------|---------|--------|----------|"
+            echo "| flow | \`$FLOW_VERSION\` | [\`${FLOW_SHA:0:7}\`](https://github.com/vaadin/flow/commit/$FLOW_SHA) | [checks]($FLOW_CHECKS_URL) |"
+            echo ""
+            echo "Built and validated, nothing deployed: deploying is still disabled in this prototype."
+          } >> "$GITHUB_STEP_SUMMARY"

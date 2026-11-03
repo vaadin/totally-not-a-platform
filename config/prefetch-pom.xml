@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A pom with no modules of its own, used as the context for pre-fetching
+     the component jars of the platform version into the local Maven
+     repository before the platform generator runs: the generator reads the
+     npm versions each component pins from META-INF/VAADIN/versions/ of the
+     jars it finds there, and without them it would silently produce an
+     @vaadin/vaadin-core package.json that depends on almost nothing.
+
+     Usage:
+       mvn -f config/prefetch-pom.xml dependency:get \
+         -Dartifact=com.vaadin:vaadin:25.4-SNAPSHOT:pom -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.vaadin.prototype</groupId>
+    <artifactId>prefetch</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <repositories>
+        <repository>
+            <id>vaadin-prereleases</id>
+            <url>https://maven.vaadin.com/vaadin-prereleases</url>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+</project>
