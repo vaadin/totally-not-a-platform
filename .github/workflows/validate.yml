@@ -248,10 +248,12 @@ jobs:
         run: |
           mkdir -p ~/.vaadin
           printf '{"username":"%s","proKey":"%s"}' "${VAADIN_PRO_KEY%%/*}" "${VAADIN_PRO_KEY#*/}" > ~/.vaadin/proKey
+      # surefire.timeout kills a test JVM that hangs, so the run names the
+      # module instead of the job timing out with nothing to show.
       - name: Run unit tests
         run: |
           mvn test -Drelease -Dflow.version="$BUILD_VERSION" -DskipSvgChartsBuild \
-            -T 1C -Dsurefire.parallel=classes -Dsurefire.threadCount=2
+            -T 1C -Dsurefire.parallel=classes -Dsurefire.threadCount=2 -Dsurefire.timeout=600
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
