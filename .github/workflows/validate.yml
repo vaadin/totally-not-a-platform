@@ -232,13 +232,31 @@ jobs:
             fs.writeFileSync("versions.json", JSON.stringify(versions, null, 4) + "\n");
           '
           git diff versions.json
+      # The prod bundle modules bundle the commercial components, which need a
+      # licence. Without the secret, they are built watermarked instead, which
+      # validates the same code.
+      - name: Install the Vaadin licence
+        id: licence
+        env:
+          TB_LICENSE: ${{ secrets.TB_LICENSE }}
+        run: |
+          if [ -z "$TB_LICENSE" ]; then
+            echo "::warning::secrets.TB_LICENSE is not set; building the commercial components watermarked"
+            echo "maven-args=-Dvaadin.commercialWithBanner" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p ~/.vaadin
+          printf '{"username":"%s","proKey":"%s"}' "${TB_LICENSE%%/*}" "${TB_LICENSE#*/}" > ~/.vaadin/proKey
       - name: Generate BOMs
         run: scripts/generateBoms.sh
       - name: Set Platform version to ${{ env.PLATFORM_BUILD_VERSION }}
         run: mvn -DnewVersion="$PLATFORM_BUILD_VERSION" -DgenerateBackupPoms=false versions:set
       - name: Build and run unit tests
+        env:
+          LICENCE_ARGS: ${{ steps.licence.outputs.maven-args }}
         run: |
-          mvn -e -V -U -Dvaadin.npm.minimumFrontendPackageAgeDays=0 \
+          # shellcheck disable=SC2086 # LICENCE_ARGS is empty or one flag
+          mvn -e -V -U -Dvaadin.npm.minimumFrontendPackageAgeDays=0 $LICENCE_ARGS \
             -Pproduction,jandex,hilla,dev-bundle,gradle,enforcer,ee,oss \
             -T 1C -Daether.syncContext.named.time=180 \
             install
