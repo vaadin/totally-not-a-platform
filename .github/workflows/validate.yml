@@ -24,8 +24,10 @@ on:
   # A change to the orchestrator validates itself against the configured refs.
   pull_request:
 
+# A new push to a PR supersedes its previous run; manual runs never cancel
+# each other, as each can validate different refs.
 concurrency:
-  group: validate-${{ github.event.pull_request.number || github.ref }}
+  group: validate-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -54,6 +56,8 @@ jobs:
       platform-sha: ${{ steps.resolve.outputs.platform-sha }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Test the scripts
+        run: node --test scripts/
       - name: Resolve the refs to commits
         id: resolve
         env:
@@ -90,6 +94,10 @@ jobs:
           path: ~/.m2/repository
           key: ${{ runner.os }}-flow-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-flow-maven-
+      # Flow builds from earlier runs end up in the cache; only this run's
+      # build may be handed on.
+      - name: Purge earlier Flow builds from the local repo
+        run: rm -rf ~/.m2/repository/com/vaadin/*/"$FLOW_BUILD_VERSION"
       - name: Set Flow version to ${{ env.FLOW_BUILD_VERSION }}
         run: ./scripts/computeMatrix.js set-version --version="$FLOW_BUILD_VERSION"
       - name: Generate the unit test matrix
@@ -201,7 +209,7 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
-      - uses: stCarolas/setup-maven@v5.1
+      - uses: stCarolas/setup-maven@12eb41b233df95d49b0c11fc1b5bc8312e5d4ce0 # v5.1
         with:
           maven-version: ${{ env.MAVEN_VERSION }}
       # Stale Vaadin snapshots in the cache would mask what this run builds.
@@ -253,15 +261,14 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: commits
-      # Flow passes when its build and every unit test job passed; Platform
-      # has its own job.
       - name: Write manifest.json
         env:
-          FLOW_RESULT: ${{ needs.flow-build.result == 'success' && needs.flow-unit-tests.result || needs.flow-build.result }}
-          PLATFORM_RESULT: ${{ needs.platform.result }}
-        run: |
-          node scripts/write-manifest.js --commits=commits.json --out=manifest.json \
-            --results="{\"flow\":\"$FLOW_RESULT\",\"platform\":\"$PLATFORM_RESULT\"}"
+          RESULTS: >-
+            {
+              "flow": ["${{ needs.flow-build.result }}", "${{ needs.flow-unit-tests.result }}"],
+              "platform": ["${{ needs.platform.result }}"]
+            }
+        run: node scripts/write-manifest.js --commits=commits.json --results="$RESULTS" --out=manifest.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

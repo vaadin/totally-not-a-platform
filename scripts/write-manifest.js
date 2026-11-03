@@ -5,8 +5,9 @@
 //
 // Usage: write-manifest.js --commits=commits.json --results=<json> [--out=manifest.json]
 //
-// --results maps each component to its validation result, e.g.
-// {"flow":"success","platform":"failure"}. Exits with 1 unless every
+// --results maps each component to the results of the jobs that validate
+// it, e.g. {"flow":["success","failure"],"platform":["success"]}. A
+// component succeeds only when all of its jobs did. Exits with 1 unless every
 // component succeeded. When run in GitHub Actions, also writes a table to the
 // job summary.
 
@@ -23,9 +24,18 @@ const results = JSON.parse(args.results || '{}');
 const out = args.out || 'manifest.json';
 const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
 
+// The first job result that is not a success, so a failed build reports
+// `failure` rather than the `skipped` of the tests after it.
+function componentResult(jobResults) {
+  if (!jobResults || jobResults.length === 0) {
+    return 'missing';
+  }
+  return jobResults.find((result) => result !== 'success') || 'success';
+}
+
 const components = {};
 for (const [name, commit] of Object.entries(commits)) {
-  components[name] = { ...commit, result: results[name] || 'missing' };
+  components[name] = { ...commit, result: componentResult(results[name]) };
 }
 const manifest = {
   created: new Date().toISOString(),
