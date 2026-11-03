@@ -17,14 +17,14 @@ for (const { name, results, flow, platform, overall } of [
     overall: 'success',
   },
   {
-    name: 'Flow build failed, so its unit tests were skipped',
+    name: 'the first job of a component failed and the one after it was skipped',
     results: { flow: ['failure', 'skipped'], platform: ['skipped'] },
     flow: 'failure',
     platform: 'skipped',
     overall: 'failure',
   },
   {
-    name: 'a Flow unit test job failed',
+    name: 'a later job of a component failed',
     results: { flow: ['success', 'failure'], platform: ['success'] },
     flow: 'failure',
     platform: 'success',

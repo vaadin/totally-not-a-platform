@@ -1,7 +1,8 @@
 {
   "flow": {
     "repo": "vaadin/flow",
-    "ref": "main"
+    "ref": "main",
+    "greenWorkflow": "Flow Validation"
   },
   "platform": {
     "repo": "vaadin/platform",
