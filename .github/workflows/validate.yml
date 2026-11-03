@@ -131,11 +131,12 @@ jobs:
 
   # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
   # differences: versions.json points Flow at the commit built above, and the
-  # unit tests run. `package` rather than `install`/`verify`: nothing after
-  # this job needs the Platform artifacts, and the integration tests, which
-  # bind to the later integration-test/verify phases, do not run. Not `test`:
-  # vaadin-dev-bundle unpacks a sibling module's jar, which only exists once
-  # it is packaged.
+  # unit tests run. `install`, not `test` or `package`: vaadin-dev-bundle
+  # unpacks a sibling module's packaged jar, and vaadin-gradle-plugin's
+  # nested Gradle build resolves the bundles from the local repository. No
+  # integration tests run all the same: they live only in the
+  # vaadin-platform-*-test modules, whose profiles (npm-it, react-hybrid, ...)
+  # are not enabled here.
   platform:
     name: Build and test Platform
     needs: [resolve, flow-build]
@@ -196,7 +197,7 @@ jobs:
           mvn -e -V -U -Dvaadin.npm.minimumFrontendPackageAgeDays=0 \
             -Pproduction,jandex,hilla,dev-bundle,gradle,enforcer,ee,oss \
             -T 1C -Daether.syncContext.named.time=180 \
-            package
+            install
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
