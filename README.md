@@ -11,7 +11,7 @@ The [Validate](.github/workflows/validate.yml) workflow:
 3. Builds Platform at its commit against that Flow build (`versions.json` is pointed at it) and runs its unit tests. Every other component comes in at the version Platform's `versions.json` already pins.
 4. Writes `manifest.json`, uploaded as a run artifact, with the commit and result of every component.
 
-It needs a `TB_LICENSE` repository secret (`username/proKey`, the one Flow's and Platform's CI use): Flow's unit tests and Platform's production bundles include the commercial components.
+It needs a `VAADIN_PRO_KEY` repository secret (`username/proKey`): Flow's unit tests and Platform's production bundles include the commercial components.
 
 Nothing is published. Run it from the Actions tab, optionally with a branch, tag or commit for `flow-ref` / `platform-ref`, or:
 
