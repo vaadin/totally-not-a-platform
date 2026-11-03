@@ -55,6 +55,17 @@ jobs:
       flow-sha: ${{ steps.resolve.outputs.flow-sha }}
       platform-sha: ${{ steps.resolve.outputs.platform-sha }}
     steps:
+      # Flow's unit tests and Platform's production bundles need a Vaadin
+      # licence (the commercial components), the same secret Flow's and
+      # Platform's own CI use.
+      - name: Check secrets
+        env:
+          TB_LICENSE: ${{ secrets.TB_LICENSE }}
+        run: |
+          if [ -z "$TB_LICENSE" ]; then
+            echo "🚫 **TB_LICENSE** is not defined; add it to ${{ github.repository }} as \`username/proKey\`" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - name: Test the scripts
         run: node --test 'scripts/*.test.js'
@@ -96,6 +107,12 @@ jobs:
           restore-keys: ${{ runner.os }}-flow-maven-
       # Flow builds from earlier runs end up in the cache; only this run's
       # build may be handed on.
+      - name: Install the Vaadin licence
+        env:
+          TB_LICENSE: ${{ secrets.TB_LICENSE }}
+        run: |
+          mkdir -p ~/.vaadin
+          printf '{"username":"%s","proKey":"%s"}' "${TB_LICENSE%%/*}" "${TB_LICENSE#*/}" > ~/.vaadin/proKey
       - name: Purge earlier Flow builds from the local repo
         run: rm -rf ~/.m2/repository/com/vaadin/*/"$FLOW_BUILD_VERSION"
       - name: Set Flow version to ${{ env.FLOW_BUILD_VERSION }}
@@ -167,6 +184,12 @@ jobs:
           tar xf flow-maven-artifacts.tar -C ~/.m2/repository
           tar xf flow-workspace.tar
           rm flow-*.tar
+      - name: Install the Vaadin licence
+        env:
+          TB_LICENSE: ${{ secrets.TB_LICENSE }}
+        run: |
+          mkdir -p ~/.vaadin
+          printf '{"username":"%s","proKey":"%s"}' "${TB_LICENSE%%/*}" "${TB_LICENSE#*/}" > ~/.vaadin/proKey
       - name: Run unit tests
         env:
           MODULE: ${{ matrix.module }}
@@ -235,19 +258,10 @@ jobs:
             fs.writeFileSync("versions.json", JSON.stringify(versions, null, 4) + "\n");
           '
           git diff versions.json
-      # The prod bundle modules bundle the commercial components, which need a
-      # licence. Without the secret, they are built watermarked instead, which
-      # validates the same code.
       - name: Install the Vaadin licence
-        id: licence
         env:
           TB_LICENSE: ${{ secrets.TB_LICENSE }}
         run: |
-          if [ -z "$TB_LICENSE" ]; then
-            echo "::warning::secrets.TB_LICENSE is not set; building the commercial components watermarked"
-            echo "maven-args=-Dvaadin.commercialWithBanner" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           mkdir -p ~/.vaadin
           printf '{"username":"%s","proKey":"%s"}' "${TB_LICENSE%%/*}" "${TB_LICENSE#*/}" > ~/.vaadin/proKey
       - name: Generate BOMs
@@ -255,11 +269,8 @@ jobs:
       - name: Set Platform version to ${{ env.PLATFORM_BUILD_VERSION }}
         run: mvn -DnewVersion="$PLATFORM_BUILD_VERSION" -DgenerateBackupPoms=false versions:set
       - name: Build and run unit tests
-        env:
-          LICENCE_ARGS: ${{ steps.licence.outputs.maven-args }}
         run: |
-          # shellcheck disable=SC2086 # LICENCE_ARGS is empty or one flag
-          mvn -e -V -U -Dvaadin.npm.minimumFrontendPackageAgeDays=0 $LICENCE_ARGS \
+          mvn -e -V -U -Dvaadin.npm.minimumFrontendPackageAgeDays=0 \
             -Pproduction,jandex,hilla,dev-bundle,gradle,enforcer,ee,oss \
             -T 1C -Daether.syncContext.named.time=180 \
             install
