@@ -56,8 +56,7 @@ jobs:
       platform-sha: ${{ steps.resolve.outputs.platform-sha }}
     steps:
       # Flow's unit tests and Platform's production bundles need a Vaadin
-      # licence (the commercial components), the same secret Flow's and
-      # Platform's own CI use.
+      # licence (the commercial components).
       - name: Check secrets
         env:
           VAADIN_PRO_KEY: ${{ secrets.VAADIN_PRO_KEY }}
