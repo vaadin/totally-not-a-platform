@@ -1,0 +1,10 @@
+{
+  "flow": {
+    "repo": "vaadin/flow",
+    "ref": "main"
+  },
+  "platform": {
+    "repo": "vaadin/platform",
+    "ref": "main"
+  }
+}

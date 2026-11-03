@@ -1,0 +1,269 @@
+name: Validate
+
+# Pins one commit of every component in config/components.json, builds it,
+# runs its unit tests and records the result in manifest.json. Platform is
+# built against the Flow commit pinned here, not against a published Flow.
+#
+#   resolve ─┬─ flow-build ─┬─ flow-unit-tests ─┬─ manifest
+#            │              └─ platform ────────┤
+#            └──────────────────────────────────┘
+#
+# Nothing is published: the only output is the manifest.json artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      flow-ref:
+        description: vaadin/flow branch, tag or commit (empty = config/components.json)
+        required: false
+        default: ''
+      platform-ref:
+        description: vaadin/platform branch, tag or commit (empty = config/components.json)
+        required: false
+        default: ''
+  # A change to the orchestrator validates itself against the configured refs.
+  pull_request:
+
+concurrency:
+  group: validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Versions the Flow and Platform reactors are rewritten to, the same ones
+  # their own CI uses. Neither is ever published, so Maven can only resolve
+  # them from what this run built, never from a repository.
+  FLOW_BUILD_VERSION: 999.99-SNAPSHOT
+  PLATFORM_BUILD_VERSION: 99.0-SNAPSHOT
+  # Same retries Flow's validation passes; see vaadin/flow validation.yml.
+  MAVEN_ARGS: >-
+    -B -ntp
+    -Daether.connector.http.retryHandler.count=3
+    -Daether.connector.http.retryHandler.serviceUnavailable=429,500,502,503,504,403
+    -Daether.connector.http.connectionMaxTtl=25
+
+jobs:
+  resolve:
+    name: Resolve commits
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      flow-sha: ${{ steps.resolve.outputs.flow-sha }}
+      platform-sha: ${{ steps.resolve.outputs.platform-sha }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Resolve the refs to commits
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FLOW_REF: ${{ inputs.flow-ref }}
+          PLATFORM_REF: ${{ inputs.platform-ref }}
+        run: node scripts/resolve-commits.js --flow-ref="$FLOW_REF" --platform-ref="$PLATFORM_REF" --out=commits.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: commits
+          path: commits.json
+
+  # Mirrors the `build` job of vaadin/flow validation.yml, using Flow's own
+  # scripts and actions from the pinned commit.
+  flow-build:
+    name: Build Flow
+    needs: resolve
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    outputs:
+      matrix-unit: ${{ steps.matrix.outputs.matrix-unit }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: vaadin/flow
+          ref: ${{ needs.resolve.outputs.flow-sha }}
+      - uses: ./.github/actions/setup-frontend-tools
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version-file: .tool-versions
+          distribution: temurin
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-flow-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-flow-maven-
+      - name: Set Flow version to ${{ env.FLOW_BUILD_VERSION }}
+        run: ./scripts/computeMatrix.js set-version --version="$FLOW_BUILD_VERSION"
+      - name: Generate the unit test matrix
+        id: matrix
+        run: echo "matrix-unit=$(./scripts/computeMatrix.js unit-tests --parallel=4 current module args)" >> "$GITHUB_OUTPUT"
+      - name: Compile and install Flow
+        run: |
+          cmd="mvn install -DskipTests -pl !flow-plugins/flow-gradle-plugin"
+          $cmd -T 2C -q || $cmd
+      # Two artifacts: the installed Flow jars, which the platform job builds
+      # against, and the build output, which the unit test jobs reuse.
+      - name: Pack the build
+        run: |
+          (cd ~/.m2/repository && find com/vaadin -mindepth 2 -maxdepth 2 -type d -name "$FLOW_BUILD_VERSION") \
+            | tar cf flow-maven-artifacts.tar -C ~/.m2/repository -T -
+          find . -type d -name target -prune -print | tar cf flow-workspace.tar -T -
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flow-maven-artifacts
+          path: flow-maven-artifacts.tar
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flow-workspace
+          path: flow-workspace.tar
+          retention-days: 1
+
+  # Mirrors the `unit-tests` job of vaadin/flow validation.yml, without
+  # coverage.
+  flow-unit-tests:
+    name: Flow unit tests (${{ matrix.current }})
+    needs: [resolve, flow-build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.flow-build.outputs.matrix-unit) }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: vaadin/flow
+          ref: ${{ needs.resolve.outputs.flow-sha }}
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version-file: .tool-versions
+          distribution: temurin
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-flow-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-flow-maven-
+      - name: Set Flow version to ${{ env.FLOW_BUILD_VERSION }}
+        run: ./scripts/computeMatrix.js set-version --version="$FLOW_BUILD_VERSION"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-maven-artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-workspace
+      - name: Restore the build
+        run: |
+          mkdir -p ~/.m2/repository
+          tar xf flow-maven-artifacts.tar -C ~/.m2/repository
+          tar xf flow-workspace.tar
+          rm flow-*.tar
+      - name: Run unit tests
+        env:
+          MODULE: ${{ matrix.module }}
+          TESTS: ${{ matrix.args }}
+        run: |
+          if [ -n "$MODULE" ]; then
+            mvn -T 1C -pl "$MODULE" -Dtest="$TESTS" verify
+          else
+            mvn -T 1C -pl "$TESTS" verify
+          fi
+      - name: Package test reports
+        if: failure()
+        run: find . -name surefire-reports -o -name failsafe-reports | tar czf flow-test-reports-${{ matrix.current }}.tgz -T -
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: flow-test-reports-${{ matrix.current }}
+          path: flow-test-reports-*.tgz
+          retention-days: 7
+
+  # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
+  # differences: versions.json points Flow at the commit built above, and the
+  # unit tests run.
+  platform:
+    name: Build and test Platform
+    needs: [resolve, flow-build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      NODE_VERSION: 26.12.1
+      MAVEN_VERSION: 3.9.2
+      JAVA_VERSION: 21
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: vaadin/platform
+          ref: ${{ needs.resolve.outputs.platform-sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+      - uses: stCarolas/setup-maven@v5.1
+        with:
+          maven-version: ${{ env.MAVEN_VERSION }}
+      # Stale Vaadin snapshots in the cache would mask what this run builds.
+      - name: Purge Vaadin and Hilla artifacts from the local repo
+        run: rm -rf ~/.m2/repository/com/vaadin ~/.m2/repository/dev/hilla ~/.gradle
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-maven-artifacts
+      - name: Install the Flow build into the local repo
+        run: |
+          mkdir -p ~/.m2/repository
+          tar xf flow-maven-artifacts.tar -C ~/.m2/repository
+          rm flow-maven-artifacts.tar
+      - name: Point versions.json at Flow ${{ env.FLOW_BUILD_VERSION }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
+            versions.core.flow.javaVersion = process.env.FLOW_BUILD_VERSION;
+            fs.writeFileSync("versions.json", JSON.stringify(versions, null, 4) + "\n");
+          '
+          git diff versions.json
+      - name: Generate BOMs
+        run: scripts/generateBoms.sh
+      - name: Set Platform version to ${{ env.PLATFORM_BUILD_VERSION }}
+        run: mvn -DnewVersion="$PLATFORM_BUILD_VERSION" -DgenerateBackupPoms=false versions:set
+      - name: Build and run unit tests
+        run: |
+          mvn -e -V -U -Dvaadin.npm.minimumFrontendPackageAgeDays=0 \
+            -Pproduction,jandex,hilla,dev-bundle,gradle,enforcer,ee,oss \
+            -T 1C -Daether.syncContext.named.time=180 \
+            install
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: platform-test-reports
+          if-no-files-found: ignore
+          retention-days: 7
+          path: '**/target/*-reports/*.xml'
+
+  manifest:
+    name: Write manifest
+    needs: [resolve, flow-build, flow-unit-tests, platform]
+    if: always() && needs.resolve.result == 'success'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: commits
+      # Flow passes when its build and every unit test job passed; Platform
+      # has its own job.
+      - name: Write manifest.json
+        env:
+          FLOW_RESULT: ${{ needs.flow-build.result == 'success' && needs.flow-unit-tests.result || needs.flow-build.result }}
+          PLATFORM_RESULT: ${{ needs.platform.result }}
+        run: |
+          node scripts/write-manifest.js --commits=commits.json --out=manifest.json \
+            --results="{\"flow\":\"$FLOW_RESULT\",\"platform\":\"$PLATFORM_RESULT\"}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: manifest
+          path: manifest.json
