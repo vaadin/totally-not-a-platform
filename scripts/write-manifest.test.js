@@ -18,7 +18,7 @@ for (const { name, needs, flow, platform, overall } of [
   },
   {
     name: 'Flow failed, so Platform was skipped',
-    needs: { flow: { result: 'failure' }, platform: { result: 'skipped' } },
+    needs: { flow: { result: 'failure' }, 'flow-unit-tests': { result: 'skipped' }, platform: { result: 'skipped' } },
     flow: 'failure',
     platform: 'skipped',
     overall: 'failure',

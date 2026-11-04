@@ -101,7 +101,9 @@ jobs:
       # Cached Vaadin snapshots would mask what this run builds.
       - &purge
         name: Purge Vaadin and Hilla artifacts from the local repo
-        run: rm -rf ~/.m2/repository/com/vaadin ~/.m2/repository/dev/hilla
+        run: |
+          rm -rf ~/.m2/repository/com/vaadin ~/.m2/repository/dev/hilla
+          mkdir -p ~/.m2/repository
       - &install-upstream
         name: Install the upstream builds into the local repo
         if: inputs.upstream != ''
