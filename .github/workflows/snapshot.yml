@@ -29,11 +29,6 @@ on:
         type: boolean
         default: false
 
-# Never cancel a publish half way; a newer snapshot waits for the one before.
-concurrency:
-  group: snapshot
-  cancel-in-progress: false
-
 permissions:
   contents: read
   # Jobs download the artifacts of the Validate run and of earlier jobs.
@@ -47,8 +42,9 @@ env:
     -Daether.connector.http.connectionMaxTtl=25
 
 jobs:
-  # Only a Validate run that passed and was started for main (dispatched,
-  # not for a pull request) is published.
+  # Only a Validate run that passed, was started for main (not for a pull
+  # request) and validated the refs of config/components.json is published:
+  # a run started by hand for some other branch of a component stays a test.
   resolve:
     name: Read the validated commits
     if: >-
@@ -61,6 +57,16 @@ jobs:
       commits: ${{ steps.manifest.outputs.commits }}
       version: ${{ steps.version.outputs.version }}
     steps:
+      # Without the licence the commercial components would be built
+      # watermarked, and published so.
+      - name: Check the licence
+        env:
+          VAADIN_PRO_KEY: ${{ secrets.VAADIN_PRO_KEY }}
+        run: |
+          if [ -z "$VAADIN_PRO_KEY" ]; then
+            echo "🚫 **VAADIN_PRO_KEY** is not defined in ${{ github.repository }}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Check the deploy configuration
         if: ${{ !inputs.dry-run }}
         env:
@@ -72,18 +78,32 @@ jobs:
             echo "🚫 The **MAVEN_SNAPSHOT_DEPLOY_URL** variable or the **SNAPSHOT_USERNAME** / **SNAPSHOT_PASSWORD** secrets are not defined in ${{ github.repository }}" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - name: Read the manifest of the Validate run
         id: manifest
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.validate-run-id || github.event.workflow_run.id }}
         run: |
+          fail() { echo "🚫 Validate run $RUN_ID: $1, nothing to publish" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+          # A run ID given by hand gets the same checks the trigger makes.
+          run=$(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --json workflowName,event,headBranch,conclusion)
+          [ "$(jq -r .workflowName <<< "$run")" = Validate ] || fail "not a Validate run"
+          [ "$(jq -r .conclusion <<< "$run")" = success ] || fail "did not pass"
+          [ "$(jq -r .headBranch <<< "$run")" = main ] || fail "not started for main"
+          [ "$(jq -r .event <<< "$run")" != pull_request ] || fail "started for a pull request"
           gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n manifest -D "$RUNNER_TEMP"
           manifest="$RUNNER_TEMP/manifest.json"
-          if [ "$(jq -r .result "$manifest")" != success ]; then
-            echo "🚫 Validate run $RUN_ID did not pass, nothing to publish" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [ "$(jq -r .result "$manifest")" = success ] || fail "its manifest does not say success"
+          # Every component of the config, each at the configured ref: a run
+          # from before a component was added, or one that validated another
+          # branch, is not what the snapshot should hold.
+          mismatches=$(jq -r --slurpfile manifest "$manifest" '
+            to_entries[] | . as $c | ($manifest[0].components[$c.key]) as $m
+            | if $m == null then "\($c.key): not in the manifest"
+              elif $m.ref != $c.value.ref then "\($c.key): validated \($m.ref), not \($c.value.ref)"
+              else empty end' config/components.json)
+          [ -z "$mismatches" ] || fail "$(tr '\n' ';' <<< "$mismatches")"
           echo "commits=$(jq -c .components "$manifest")" >> "$GITHUB_OUTPUT"
           {
             echo "## Publishing the commits of [Validate run $RUN_ID]($(jq -r .run "$manifest"))"
@@ -304,6 +324,11 @@ jobs:
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-26.04
     timeout-minutes: 30
+    # The only job that writes: never cancel it half way, and let a newer
+    # snapshot wait for the one before.
+    concurrency:
+      group: snapshot-publish
+      cancel-in-progress: false
     steps:
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
@@ -317,20 +342,24 @@ jobs:
           pattern: '*-staging'
           merge-multiple: true
           path: ${{ runner.temp }}/tars
-      - name: Merge the staging repositories
-        run: |
-          mkdir -p "$RUNNER_TEMP/staging"
-          for tar in "$RUNNER_TEMP"/tars/*-staging.tar; do
-            basename "$tar"
-            tar xf "$tar" -C "$RUNNER_TEMP/staging"
-          done
+      # One staging repository at a time: metadata several components deploy,
+      # such as the plugin prefixes of com/vaadin/maven-metadata.xml, is then
+      # merged into the repository's copy each time instead of one
+      # component's copy overwriting the others' before the merge.
       - name: Publish to the snapshot repository
         env:
           MAVEN_SNAPSHOT_DEPLOY_URL: ${{ vars.MAVEN_SNAPSHOT_DEPLOY_URL }}
           SNAPSHOT_USERNAME: ${{ secrets.SNAPSHOT_USERNAME }}
           SNAPSHOT_PASSWORD: ${{ secrets.SNAPSHOT_PASSWORD }}
         run: |
-          mvn org.codehaus.mojo:wagon-maven-plugin:2.0.2:merge-maven-repos \
-            -Dwagon.source="file://$RUNNER_TEMP/staging" \
-            -Dwagon.target="$MAVEN_SNAPSHOT_DEPLOY_URL" \
-            -Dwagon.targetId=vaadin-snapshots
+          for tar in "$RUNNER_TEMP"/tars/*-staging.tar; do
+            staging="$RUNNER_TEMP/staging/$(basename "$tar" .tar)"
+            mkdir -p "$staging"
+            tar xf "$tar" -C "$staging"
+            echo "::group::$(basename "$tar" -staging.tar)"
+            mvn org.codehaus.mojo:wagon-maven-plugin:2.0.2:merge-maven-repos \
+              -Dwagon.source="file://$staging" \
+              -Dwagon.target="$MAVEN_SNAPSHOT_DEPLOY_URL" \
+              -Dwagon.targetId=vaadin-snapshots
+            echo "::endgroup::"
+          done
