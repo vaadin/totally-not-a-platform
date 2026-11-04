@@ -23,7 +23,7 @@ Components built from source, in build order:
 - Web Components: unit tests only (`yarn test --all`); Flow Components and Platform still take them from npm
 - Platform: against all of the above
 
-Every component before Platform is built by a call of the reusable [build-component.yml](.github/workflows/build-component.yml), which installs it at `999.99-SNAPSHOT` against the components built before it and hands its artifacts on; a second call, `<component>-unit-tests`, runs its unit tests in parallel with whatever builds on it next. To add a component:
+Every Maven component before Platform is built by a call of the reusable [build-component.yml](.github/workflows/build-component.yml), which installs it at `999.99-SNAPSHOT` against the components built before it and hands its artifacts on; a second call, `<component>-unit-tests`, runs its unit tests in parallel with whatever builds on it next. (Web Components, which only runs its unit tests, is an inline `web-components-unit-tests` job instead.) To add a Maven component:
 
 1. Add it to `config/components.json`, with `platformVersions` listing the `versions.json` entries (`<section>.<name>`) Platform should take from its build.
 2. Add a `<component>` job (and a `<component>-unit-tests` job) calling `build-component.yml` to `validate.yml`, with the components it builds against as `upstream`, and add both to the `needs` of `platform` and `manifest`.
