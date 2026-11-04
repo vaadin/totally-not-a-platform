@@ -40,6 +40,13 @@
       "core.browserless-test"
     ]
   },
+  "collaboration-engine": {
+    "repo": "vaadin/collaboration-engine",
+    "ref": "main",
+    "platformVersions": [
+      "kits.vaadin-collaboration-engine"
+    ]
+  },
   "platform": {
     "repo": "vaadin/platform",
     "ref": "main"
