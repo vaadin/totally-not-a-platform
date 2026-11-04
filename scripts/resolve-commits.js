@@ -9,7 +9,9 @@
 // `validation.yml`) resolves to the newest commit at or before its ref on
 // which that workflow succeeded, so it does not need to be tested again; the
 // run is recorded as `greenRun`, and a warning is printed when that is not
-// the commit the ref points at. Any other component resolves to the commit
+// the commit the ref points at. A ref given with --<component>-ref must be
+// green itself: it asks for that commit, so falling back to an older one
+// would validate something else. Any other component resolves to the commit
 // its ref points at.
 //
 // Writes the resolved commits as JSON to --out and, when run in GitHub
@@ -48,7 +50,7 @@ async function greenRun(repo, sha, workflow, fetchImpl) {
   return runs.find((run) => run.conclusion === 'success');
 }
 
-async function resolveComponent({ repo, ref, greenWorkflow }, fetchImpl = fetch) {
+async function resolveComponent({ repo, ref, greenWorkflow, exact = false }, fetchImpl = fetch) {
   const encodedRef = encodeURIComponent(ref);
   if (!greenWorkflow) {
     return { repo, ref, ...describe(await api(`/repos/${repo}/commits/${encodedRef}`, fetchImpl)) };
@@ -57,6 +59,9 @@ async function resolveComponent({ repo, ref, greenWorkflow }, fetchImpl = fetch)
   for (const commit of commits) {
     const run = await greenRun(repo, commit.sha, greenWorkflow, fetchImpl);
     if (run) {
+      if (commit !== commits[0] && exact) {
+        throw new Error(`${repo}@${ref} (${commits[0].sha.slice(0, 10)}) has not passed ${greenWorkflow}`);
+      }
       if (commit !== commits[0]) {
         console.log(`::warning::${repo}@${ref} is at ${commits[0].sha.slice(0, 10)}, which has not passed ${greenWorkflow}; using ${commit.sha.slice(0, 10)}, the newest commit before it that has`);
       }
@@ -81,7 +86,7 @@ async function main() {
   const commits = {};
   for (const [name, component] of Object.entries(components)) {
     const ref = args[`${name}-ref`] || component.ref;
-    commits[name] = await resolveComponent({ ...component, ref });
+    commits[name] = await resolveComponent({ ...component, ref, exact: Boolean(args[`${name}-ref`]) });
     console.log(`${name}: ${component.repo}@${ref} -> ${commits[name].sha}`);
   }
   fs.writeFileSync(out, JSON.stringify(commits, null, 2) + '\n');

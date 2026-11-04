@@ -8,11 +8,11 @@ name: Validate
 # Flow resolves to its newest commit that already passed Flow's own
 # validation, so it is built without running its tests again.
 #
-#   resolve ── flow ── flow-components ── platform ── manifest
+#   resolve ── <components, each after the ones it builds on> ── platform ── manifest
 #
-# Each component before Platform is built by a call of build-component.yml;
-# where its unit tests run, a second call (`<component>-unit-tests`) runs
-# them in parallel with whatever builds on the component next.
+# A component is built by a job named after it, usually a call of
+# build-component.yml; where its unit tests run, a `<component>-unit-tests`
+# job runs them in parallel with whatever builds on the component next.
 #
 # Nothing is published: the only output is the manifest.json artifact.
 
@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       flow-ref:
-        description: vaadin/flow branch, tag or commit (empty = config/components.json)
+        description: vaadin/flow branch, tag or commit, which must have passed Flow's validation (empty = newest green commit of config/components.json's ref)
         required: false
         default: ''
       flow-components-ref:
