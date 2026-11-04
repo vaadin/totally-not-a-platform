@@ -59,4 +59,16 @@ Example `manifest.json`:
 }
 ```
 
+## Snapshot
+
+The [Snapshot](.github/workflows/snapshot.yml) workflow publishes what a Validate run validated. It starts when a Validate run started for `main` (not for a pull request) passes, or by hand with the ID of such a run:
+
+```sh
+gh workflow run snapshot.yml -R vaadin/totally-not-a-platform -f validate-run-id=<run id> -f dry-run=true
+```
+
+It reads the commits from that run's `manifest.json` and rebuilds exactly those commits of every Maven component (all but Web Components) at the Platform version, e.g. `25.4-SNAPSHOT`, in the same order as Validate. No tests run, but the javadoc jars are built. Each component deploys into a staging repository of its own; only when every build has succeeded does the `publish` job merge them all into the snapshot repository with `wagon-maven-plugin:merge-maven-repos`, which also merges each `maven-metadata.xml` with the one already there. With `dry-run`, everything is built and staged and nothing is published.
+
+It needs the `MAVEN_SNAPSHOT_DEPLOY_URL` variable and the `SNAPSHOT_USERNAME` / `SNAPSHOT_PASSWORD` secrets, and the `VAADIN_PRO_KEY` secret like Validate. A `workflow_run` trigger only takes effect once the workflow is on the default branch.
+
 The scripts in `scripts/` are plain Node.js without dependencies and can be run locally, e.g. `node scripts/resolve-commits.js`.

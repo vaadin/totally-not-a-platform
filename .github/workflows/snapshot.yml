@@ -1,0 +1,336 @@
+name: Snapshot
+
+# Publishes the commits a successful Validate run validated as the regular
+# X.Y-SNAPSHOT of every Maven component, to the snapshot repository.
+#
+#   resolve ── <components, as in validate.yml> ── platform ── publish
+#
+# The commits come from that run's manifest.json, so the snapshot holds
+# exactly what was validated. No tests run (the Validate run ran them), but
+# the javadoc jars are built, as for a release. Every component is reset to
+# the Platform version and deployed into a staging repository of its own
+# job; `publish` merges them into the snapshot repository only once every
+# build has succeeded, so a failed build publishes nothing.
+#
+# Web Components is not published here: it is not a Maven component.
+
+on:
+  workflow_run:
+    workflows: [Validate]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      validate-run-id:
+        description: ID of the successful Validate run whose commits to publish
+        required: true
+      dry-run:
+        description: Build and stage everything, but publish nothing
+        type: boolean
+        default: false
+
+# Never cancel a publish half way; a newer snapshot waits for the one before.
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Jobs download the artifacts of the Validate run and of earlier jobs.
+  actions: read
+
+env:
+  MAVEN_ARGS: >-
+    -B -ntp
+    -Daether.connector.http.retryHandler.count=3
+    -Daether.connector.http.retryHandler.serviceUnavailable=429,500,502,503,504,403
+    -Daether.connector.http.connectionMaxTtl=25
+
+jobs:
+  # Only a Validate run that passed and was started for main (dispatched,
+  # not for a pull request) is published.
+  resolve:
+    name: Read the validated commits
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event != 'pull_request')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      commits: ${{ steps.manifest.outputs.commits }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check the deploy configuration
+        if: ${{ !inputs.dry-run }}
+        env:
+          MAVEN_SNAPSHOT_DEPLOY_URL: ${{ vars.MAVEN_SNAPSHOT_DEPLOY_URL }}
+          SNAPSHOT_USERNAME: ${{ secrets.SNAPSHOT_USERNAME }}
+          SNAPSHOT_PASSWORD: ${{ secrets.SNAPSHOT_PASSWORD }}
+        run: |
+          if [ -z "$MAVEN_SNAPSHOT_DEPLOY_URL" ] || [ -z "$SNAPSHOT_USERNAME" ] || [ -z "$SNAPSHOT_PASSWORD" ]; then
+            echo "🚫 The **MAVEN_SNAPSHOT_DEPLOY_URL** variable or the **SNAPSHOT_USERNAME** / **SNAPSHOT_PASSWORD** secrets are not defined in ${{ github.repository }}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Read the manifest of the Validate run
+        id: manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.validate-run-id || github.event.workflow_run.id }}
+        run: |
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n manifest -D "$RUNNER_TEMP"
+          manifest="$RUNNER_TEMP/manifest.json"
+          if [ "$(jq -r .result "$manifest")" != success ]; then
+            echo "🚫 Validate run $RUN_ID did not pass, nothing to publish" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "commits=$(jq -c .components "$manifest")" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Publishing the commits of [Validate run $RUN_ID]($(jq -r .run "$manifest"))"
+            echo ""
+            jq -r '.components | to_entries[] | "- \(.key): [`\(.value.sha[0:10])`](\(.value.url))"' "$manifest"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Read the Platform version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMITS: ${{ steps.manifest.outputs.commits }}
+        run: |
+          sha=$(jq -r .platform.sha <<< "$COMMITS")
+          version=$(gh api "repos/vaadin/platform/contents/pom.xml?ref=$sha" --jq .content | base64 -d \
+            | xmllint --xpath '/*[local-name()="project"]/*[local-name()="version"]/text()' -)
+          case "$version" in
+            *-SNAPSHOT) ;;
+            *) echo "🚫 Platform is at $version, not a snapshot version" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # The same components and upstreams as validate.yml. Each deploys into its
+  # staging repository with -DskipTests and its own switch for the javadoc
+  # jars; -nsu keeps a snapshot in the remote repository from shadowing the
+  # upstream builds of this run, which have the same version.
+  flow:
+    name: Flow
+    needs: resolve
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: flow
+      repository: vaadin/flow
+      sha: ${{ fromJSON(needs.resolve.outputs.commits).flow.sha }}
+      build-version: ${{ needs.resolve.outputs.version }}
+      node-version: '26'
+      set-version: ./scripts/computeMatrix.js set-version --version="$BUILD_VERSION"
+      build: >-
+        mvn deploy -nsu -DskipTests -Drelease -Dmaven.javadoc.skip=false
+        -DaltDeploymentRepository=staging::default::file://"$STAGING"
+
+  flow-components:
+    name: Flow Components
+    needs: [resolve, flow]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: flow-components
+      repository: vaadin/flow-components
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['flow-components'].sha }}
+      upstream: flow
+      build-version: ${{ needs.resolve.outputs.version }}
+      build: >-
+        mvn deploy -nsu -DskipTests -Drelease -Dwith-docs -Dflow.version="$BUILD_VERSION"
+        -DaltDeploymentRepository=staging::default::file://"$STAGING"
+
+  testbench:
+    name: TestBench
+    needs: [resolve, flow]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: testbench
+      repository: vaadin/testbench
+      sha: ${{ fromJSON(needs.resolve.outputs.commits).testbench.sha }}
+      upstream: flow
+      build-version: ${{ needs.resolve.outputs.version }}
+      node-version: '20'
+      build: >-
+        mvn deploy -nsu -DskipTests -Dtestbench.javadocs -Dflow.version="$BUILD_VERSION"
+        -DaltDeploymentRepository=staging::default::file://"$STAGING"
+
+  hilla:
+    name: Hilla
+    needs: [resolve, flow, testbench]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: hilla
+      repository: vaadin/hilla
+      sha: ${{ fromJSON(needs.resolve.outputs.commits).hilla.sha }}
+      upstream: flow testbench
+      build-version: ${{ needs.resolve.outputs.version }}
+      prepare: npm ci --ignore-scripts && npm run build
+      build: >-
+        mvn deploy -nsu -DskipTests -Drelease
+        -Dflow.version="$BUILD_VERSION" -Dtestbench.version="$BUILD_VERSION"
+        -DaltDeploymentRepository=staging::default::file://"$STAGING"
+
+  browserless-test:
+    name: Browserless Test
+    needs: [resolve, flow]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: browserless-test
+      repository: vaadin/browserless-test
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['browserless-test'].sha }}
+      upstream: flow
+      build-version: ${{ needs.resolve.outputs.version }}
+      build: >-
+        mvn deploy -nsu -DskipTests -Djavadocs -Dflow.version="$BUILD_VERSION"
+        -DaltDeploymentRepository=staging::default::file://"$STAGING"
+
+  collaboration-engine:
+    name: Collaboration Engine
+    needs: [resolve, flow, flow-components]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: collaboration-engine
+      repository: vaadin/collaboration-engine
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['collaboration-engine'].sha }}
+      upstream: flow flow-components
+      build-version: ${{ needs.resolve.outputs.version }}
+      build: >-
+        mvn deploy -nsu -DskipTests
+        -Dflow.version="$BUILD_VERSION" -Dvaadin.component.version="$BUILD_VERSION"
+        -DaltDeploymentRepository=staging::default::file://"$STAGING"
+
+  observability-kit:
+    name: Observability Kit
+    needs: [resolve, flow, testbench]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: observability-kit
+      repository: vaadin/observability-kit
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['observability-kit'].sha }}
+      upstream: flow testbench
+      build-version: ${{ needs.resolve.outputs.version }}
+      node-version: '22'
+      build: >-
+        mvn deploy -nsu -DskipTests
+        -Dflow.version="$BUILD_VERSION" -Dtestbench.version="$BUILD_VERSION"
+        -DaltDeploymentRepository=staging::default::file://"$STAGING"
+
+  # The release deploy of vaadin/platform BUILD.md (javadocs, flatten-pom,
+  # shrinkWrap, both umbrellas), with the profiles of its PR validation and
+  # versions.json pointed at the builds above.
+  platform:
+    name: Platform
+    needs: [resolve, flow, flow-components, testbench, hilla, browserless-test, collaboration-engine, observability-kit]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      BUILD_VERSION: ${{ needs.resolve.outputs.version }}
+      NODE_VERSION: 26.12.1
+      MAVEN_VERSION: 3.9.2
+      JAVA_VERSION: 21
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: vaadin/platform
+          ref: ${{ fromJSON(needs.resolve.outputs.commits).platform.sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+      - uses: stCarolas/setup-maven@12eb41b233df95d49b0c11fc1b5bc8312e5d4ce0 # v5.1
+        with:
+          maven-version: ${{ env.MAVEN_VERSION }}
+      - name: Purge Vaadin and Hilla artifacts from the local repo
+        run: |
+          rm -rf ~/.m2/repository/com/vaadin ~/.m2/repository/dev/hilla ~/.gradle
+          mkdir -p ~/.m2/repository
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          path: orchestrator
+      - name: Install the component builds into the local repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/builds"
+          for component in $(jq -r 'to_entries[] | select(.value.platformVersions) | .key' orchestrator/config/components.json); do
+            gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$component-maven-artifacts" -D "$RUNNER_TEMP/builds"
+            tar xf "$RUNNER_TEMP/builds/$component-maven-artifacts.tar" -C ~/.m2/repository
+          done
+          rm -rf "$RUNNER_TEMP/builds"
+      - name: Point versions.json at the component builds
+        run: |
+          node orchestrator/scripts/pin-platform-versions.js --versions=versions.json --version="$BUILD_VERSION"
+          rm -rf orchestrator
+          git diff versions.json
+      - name: Install the Vaadin licence
+        env:
+          VAADIN_PRO_KEY: ${{ secrets.VAADIN_PRO_KEY }}
+        run: |
+          mkdir -p ~/.vaadin
+          printf '{"username":"%s","proKey":"%s"}' "${VAADIN_PRO_KEY%%/*}" "${VAADIN_PRO_KEY#*/}" > ~/.vaadin/proKey
+      - name: Generate BOMs
+        run: scripts/generateBoms.sh
+      - name: Build and deploy into the staging repository
+        run: |
+          mvn -e -V -nsu -Dvaadin.npm.minimumFrontendPackageAgeDays=0 \
+            -Pproduction,javadocs,flatten-pom,jandex,hilla,dev-bundle,gradle,ee,oss \
+            -DskipTests -DshrinkWrap -T 1C -Daether.syncContext.named.time=180 \
+            -DaltDeploymentRepository=staging::default::file://"$RUNNER_TEMP/staging" \
+            deploy
+          tar cf platform-staging.tar -C "$RUNNER_TEMP/staging" .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: platform-staging
+          path: platform-staging.tar
+          compression-level: 0
+          retention-days: 1
+
+  # Merges every staging repository into the snapshot repository in one go.
+  # merge-maven-repos uploads the files and merges each maven-metadata.xml
+  # with the one already in the repository.
+  publish:
+    name: Publish
+    needs: [resolve, platform]
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          server-id: vaadin-snapshots
+          server-username: SNAPSHOT_USERNAME
+          server-password: SNAPSHOT_PASSWORD
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: '*-staging'
+          merge-multiple: true
+          path: ${{ runner.temp }}/tars
+      - name: Merge the staging repositories
+        run: |
+          mkdir -p "$RUNNER_TEMP/staging"
+          for tar in "$RUNNER_TEMP"/tars/*-staging.tar; do
+            basename "$tar"
+            tar xf "$tar" -C "$RUNNER_TEMP/staging"
+          done
+      - name: Publish to the snapshot repository
+        env:
+          MAVEN_SNAPSHOT_DEPLOY_URL: ${{ vars.MAVEN_SNAPSHOT_DEPLOY_URL }}
+          SNAPSHOT_USERNAME: ${{ secrets.SNAPSHOT_USERNAME }}
+          SNAPSHOT_PASSWORD: ${{ secrets.SNAPSHOT_PASSWORD }}
+        run: |
+          mvn org.codehaus.mojo:wagon-maven-plugin:2.0.2:merge-maven-repos \
+            -Dwagon.source="file://$RUNNER_TEMP/staging" \
+            -Dwagon.target="$MAVEN_SNAPSHOT_DEPLOY_URL" \
+            -Dwagon.targetId=vaadin-snapshots
