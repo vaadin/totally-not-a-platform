@@ -33,6 +33,13 @@
       "core.hilla"
     ]
   },
+  "browserless-test": {
+    "repo": "vaadin/browserless-test",
+    "ref": "main",
+    "platformVersions": [
+      "core.browserless-test"
+    ]
+  },
   "platform": {
     "repo": "vaadin/platform",
     "ref": "main"

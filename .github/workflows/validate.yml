@@ -35,6 +35,10 @@ on:
         description: vaadin/hilla branch, tag or commit (empty = config/components.json)
         required: false
         default: ''
+      browserless-test-ref:
+        description: vaadin/browserless-test branch, tag or commit (empty = config/components.json)
+        required: false
+        default: ''
       platform-ref:
         description: vaadin/platform branch, tag or commit (empty = config/components.json)
         required: false
@@ -98,10 +102,11 @@ jobs:
           FLOW_COMPONENTS_REF: ${{ inputs.flow-components-ref }}
           TESTBENCH_REF: ${{ inputs.testbench-ref }}
           HILLA_REF: ${{ inputs.hilla-ref }}
+          BROWSERLESS_TEST_REF: ${{ inputs.browserless-test-ref }}
           PLATFORM_REF: ${{ inputs.platform-ref }}
         run: |
           node scripts/resolve-commits.js --out=commits.json \
-            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --testbench-ref="$TESTBENCH_REF" --hilla-ref="$HILLA_REF" --platform-ref="$PLATFORM_REF"
+            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --testbench-ref="$TESTBENCH_REF" --hilla-ref="$HILLA_REF" --browserless-test-ref="$BROWSERLESS_TEST_REF" --platform-ref="$PLATFORM_REF"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commits
@@ -236,6 +241,38 @@ jobs:
       test: >-
         mvn test -P'!it-modules' -pl '!:hilla-gradle-plugin' -Dflow.version="$BUILD_VERSION" -Dtestbench.version="$BUILD_VERSION"
 
+  # Mirrors the build and test jobs of vaadin/browserless-test
+  # validation.yml. -Dflow.version points the modules at the Flow build;
+  # vaadin.version (the `vaadin` platform pom, provided scope) stays at the
+  # published snapshot, as Platform builds after this.
+  browserless-test:
+    name: Browserless Test
+    needs: [resolve, flow]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: browserless-test
+      repository: vaadin/browserless-test
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['browserless-test'].sha }}
+      upstream: flow
+      build-version: ${{ needs.resolve.outputs.build-version }}
+      build: >-
+        mvn install -DskipTests -Dflow.version="$BUILD_VERSION"
+
+  browserless-test-unit-tests:
+    name: Browserless Test
+    needs: [resolve, flow, browserless-test]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: browserless-test
+      repository: vaadin/browserless-test
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['browserless-test'].sha }}
+      upstream: flow
+      build-version: ${{ needs.resolve.outputs.build-version }}
+      test: >-
+        mvn test -Dflow.version="$BUILD_VERSION"
+
   # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
   # differences: versions.json points every component built above at its
   # build (the `platformVersions` of config/components.json), and the unit
@@ -247,7 +284,7 @@ jobs:
   # are not enabled here.
   platform:
     name: Build and test Platform
-    needs: [resolve, flow, flow-components, testbench, hilla]
+    needs: [resolve, flow, flow-components, testbench, hilla, browserless-test]
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
@@ -317,7 +354,7 @@ jobs:
 
   manifest:
     name: Write manifest
-    needs: [resolve, flow, flow-components, flow-components-unit-tests, testbench, testbench-unit-tests, hilla, hilla-unit-tests, platform]
+    needs: [resolve, flow, flow-components, flow-components-unit-tests, testbench, testbench-unit-tests, hilla, hilla-unit-tests, browserless-test, browserless-test-unit-tests, platform]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
