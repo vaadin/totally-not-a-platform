@@ -12,6 +12,12 @@ The [Validate](.github/workflows/validate.yml) workflow:
 4. Builds Platform at its commit against both builds (`versions.json` is pointed at them) and runs its unit tests with `mvn install`. No integration tests run: Platform keeps them in the `vaadin-platform-*-test` modules, whose profiles are not enabled. (`mvn test`/`package` cannot build Platform: `vaadin-dev-bundle` unpacks a sibling's jar and the Gradle plugin resolves the bundles from the local repository.) Every other component comes in at the version Platform's `versions.json` already pins.
 5. Writes `manifest.json`, uploaded as a run artifact, with the commit and result of every component.
 
+Components built from source, in build order:
+
+- Flow: newest green commit, no tests
+- Flow Components: against Flow, unit tests with `mvn test`
+- Platform: against all of the above
+
 Every component before Platform is built by a call of the reusable [build-component.yml](.github/workflows/build-component.yml), which installs it at `999.99-SNAPSHOT` against the components built before it and hands its artifacts on; a second call, `<component>-unit-tests`, runs its unit tests in parallel with whatever builds on it next. To add a component:
 
 1. Add it to `config/components.json`, with `platformVersions` listing the `versions.json` entries (`<section>.<name>`) Platform should take from its build.
