@@ -173,7 +173,7 @@ jobs:
       build-version: ${{ needs.resolve.outputs.version }}
       node-version: '20'
       build: >-
-        mvn deploy -nsu -DskipTests -Dtestbench.javadocs -Dflow.version="$BUILD_VERSION"
+        mvn deploy -nsu -DskipTests -Djetty.skip -Dtestbench.javadocs -Dflow.version="$BUILD_VERSION"
         -DaltDeploymentRepository=staging::default::file://"$STAGING"
 
   hilla:
