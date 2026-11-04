@@ -11,8 +11,6 @@ name: Snapshot
 # the Platform version and deployed into a staging repository of its own
 # job; `publish` merges them into the snapshot repository only once every
 # build has succeeded, so a failed build publishes nothing.
-#
-# Web Components is not published here: it is not a Maven component.
 
 on:
   workflow_run:
