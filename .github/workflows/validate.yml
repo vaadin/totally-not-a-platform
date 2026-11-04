@@ -310,6 +310,9 @@ jobs:
       sha: ${{ fromJSON(needs.resolve.outputs.commits)['collaboration-engine'].sha }}
       upstream: flow flow-components
       build-version: ${{ needs.resolve.outputs.build-version }}
+      # At its own version: a unit test compares the artifact version with the
+      # version the code declares.
+      set-version: echo Keeping the version of the commit
       test: >-
         mvn test -Dflow.version="$BUILD_VERSION" -Dvaadin.component.version="$BUILD_VERSION"
 
