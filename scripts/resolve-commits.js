@@ -13,7 +13,7 @@
 // its ref points at.
 //
 // Writes the resolved commits as JSON to --out and, when run in GitHub
-// Actions, one `<component>-sha` output per component.
+// Actions, to the `commits` output.
 
 const fs = require('fs');
 const path = require('path');
@@ -86,8 +86,7 @@ async function main() {
   }
   fs.writeFileSync(out, JSON.stringify(commits, null, 2) + '\n');
   if (process.env.GITHUB_OUTPUT) {
-    const lines = Object.entries(commits).map(([name, { sha }]) => `${name}-sha=${sha}\n`);
-    fs.appendFileSync(process.env.GITHUB_OUTPUT, lines.join(''));
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, `commits=${JSON.stringify(commits)}\n`);
   }
 }
 

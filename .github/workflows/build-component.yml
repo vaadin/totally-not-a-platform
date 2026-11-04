@@ -1,0 +1,201 @@
+name: Build component
+
+# Builds one component of config/components.json at a pinned commit against
+# the components built before it in the same run, installs it and hands the
+# installed artifacts on as `<component>-maven-artifacts`. Called with a
+# `test` command instead, it runs the component's unit tests against that
+# build, so that a caller can run them in parallel with whatever builds on
+# the component next.
+#
+# The version every component is rewritten to (build-version) is never
+# published, so Maven can only resolve it from what this run built.
+
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: Name of the component in config/components.json; names the artifacts
+        type: string
+        required: true
+      repository:
+        type: string
+        required: true
+      sha:
+        type: string
+        required: true
+      upstream:
+        description: Space-separated components built earlier in the run that this one builds against
+        type: string
+        default: ''
+      build-version:
+        type: string
+        required: true
+      java-version:
+        type: string
+        default: '21'
+      node-version:
+        type: string
+        default: '24'
+      prepare:
+        description: Shell command run before the version is set, e.g. a frontend build
+        type: string
+        default: ''
+      set-version:
+        description: Shell command that sets the reactor version to $BUILD_VERSION
+        type: string
+        default: >-
+          mvn -q org.codehaus.mojo:versions-maven-plugin:2.22.0:set
+          -DnewVersion="$BUILD_VERSION" -DprocessAllModules=true -DgenerateBackupPoms=false
+      build:
+        description: Shell command that installs the component without running tests
+        type: string
+        default: ''
+      test:
+        description: Shell command that runs the unit tests of the build made by an earlier call; set instead of `build`
+        type: string
+        default: ''
+      carry:
+        description: Space-separated paths of the build workspace the test job needs, e.g. generated sources
+        type: string
+        default: ''
+      timeout-minutes:
+        type: number
+        default: 45
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  BUILD_VERSION: ${{ inputs.build-version }}
+  UPSTREAM: ${{ inputs.upstream }}
+  # Same retries Flow's validation passes; see vaadin/flow validation.yml.
+  MAVEN_ARGS: >-
+    -B -ntp
+    -Daether.connector.http.retryHandler.count=3
+    -Daether.connector.http.retryHandler.serviceUnavailable=429,500,502,503,504,403
+    -Daether.connector.http.connectionMaxTtl=25
+
+jobs:
+  build:
+    name: Build
+    if: inputs.build != ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - &checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.sha }}
+      - &setup-node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - &setup-java
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: temurin
+          cache: maven
+      # Cached Vaadin snapshots would mask what this run builds.
+      - &purge
+        name: Purge Vaadin and Hilla artifacts from the local repo
+        run: rm -rf ~/.m2/repository/com/vaadin ~/.m2/repository/dev/hilla
+      - &install-upstream
+        name: Install the upstream builds into the local repo
+        if: inputs.upstream != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ~/.m2/repository "$RUNNER_TEMP/upstream"
+          for component in $UPSTREAM; do
+            gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$component-maven-artifacts" -D "$RUNNER_TEMP/upstream"
+            tar xf "$RUNNER_TEMP/upstream/$component-maven-artifacts.tar" -C ~/.m2/repository
+            rm "$RUNNER_TEMP/upstream/$component-maven-artifacts.tar"
+          done
+      - &licence
+        name: Install the Vaadin licence
+        env:
+          VAADIN_PRO_KEY: ${{ secrets.VAADIN_PRO_KEY }}
+        run: |
+          mkdir -p ~/.vaadin
+          printf '{"username":"%s","proKey":"%s"}' "${VAADIN_PRO_KEY%%/*}" "${VAADIN_PRO_KEY#*/}" > ~/.vaadin/proKey
+      - name: Prepare
+        if: inputs.prepare != ''
+        run: ${{ inputs.prepare }}
+      - &set-version
+        name: Set the version to ${{ inputs.build-version }}
+        run: ${{ inputs.set-version }}
+      # Everything at the build version that is not there yet is what this
+      # component installs, whatever its groupId.
+      - name: List the upstream artifacts
+        run: (cd ~/.m2/repository && find . -type d -name "$BUILD_VERSION" | sort) > "$RUNNER_TEMP/before.txt"
+      - name: Build and install
+        run: ${{ inputs.build }}
+      - name: Pack the build
+        env:
+          COMPONENT: ${{ inputs.component }}
+          CARRY: ${{ inputs.carry }}
+        run: |
+          (cd ~/.m2/repository && find . -type d -name "$BUILD_VERSION" | sort) \
+            | comm -13 "$RUNNER_TEMP/before.txt" - > "$RUNNER_TEMP/built.txt"
+          if [ ! -s "$RUNNER_TEMP/built.txt" ]; then
+            echo "::error::Nothing was installed at $BUILD_VERSION"
+            exit 1
+          fi
+          tar cf "$COMPONENT-maven-artifacts.tar" -C ~/.m2/repository -T "$RUNNER_TEMP/built.txt"
+          if [ -n "$CARRY" ]; then
+            # shellcheck disable=SC2086 # a list of paths
+            tar cf "$COMPONENT-workspace.tar" $CARRY
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.component }}-maven-artifacts
+          path: ${{ inputs.component }}-maven-artifacts.tar
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: inputs.carry != ''
+        with:
+          name: ${{ inputs.component }}-workspace
+          path: ${{ inputs.component }}-workspace.tar
+          retention-days: 1
+
+  unit-tests:
+    name: Unit tests
+    if: inputs.test != ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - *checkout
+      - *setup-node
+      - *setup-java
+      - *purge
+      - *install-upstream
+      - *licence
+      - name: Install this build into the local repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPONENT: ${{ inputs.component }}
+          CARRY: ${{ inputs.carry }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$COMPONENT-maven-artifacts" -D "$RUNNER_TEMP"
+          tar xf "$RUNNER_TEMP/$COMPONENT-maven-artifacts.tar" -C ~/.m2/repository
+          if [ -n "$CARRY" ]; then
+            gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$COMPONENT-workspace" -D "$RUNNER_TEMP"
+            tar xf "$RUNNER_TEMP/$COMPONENT-workspace.tar"
+          fi
+      - name: Prepare
+        if: inputs.prepare != ''
+        run: ${{ inputs.prepare }}
+      - *set-version
+      - name: Run unit tests
+        run: ${{ inputs.test }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: ${{ inputs.component }}-test-reports
+          if-no-files-found: ignore
+          retention-days: 7
+          path: '**/target/surefire-reports/*.xml'
