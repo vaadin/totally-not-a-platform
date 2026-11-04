@@ -172,7 +172,10 @@ jobs:
         -T 1C -Dsurefire.parallel=classes -Dsurefire.threadCount=2 -Dsurefire.timeout=600
 
   # Mirrors the build and unit test jobs of vaadin/testbench validation.yml.
-  # The integration test modules are in a profile that is not enabled.
+  # The integration test modules (active unless -Drelease) stay in the
+  # reactor, as the UI unit test support modules among them are needed, but
+  # -Djetty.skip keeps them from starting Jetty, whose parallel starts would
+  # otherwise race for port 8080.
   # -Dflow.version points the modules at the Flow build; vaadin.version (the
   # `vaadin` platform pom, provided scope, for the UI unit testing modules)
   # stays at the published snapshot, as Platform builds after this.
@@ -189,7 +192,7 @@ jobs:
       build-version: ${{ needs.resolve.outputs.build-version }}
       node-version: '20'
       build: >-
-        mvn install -DskipTests -Dflow.version="$BUILD_VERSION" -T 1C
+        mvn install -DskipTests -Djetty.skip -Dflow.version="$BUILD_VERSION" -T 1C
 
   testbench-unit-tests:
     name: TestBench
