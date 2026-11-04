@@ -8,31 +8,31 @@ const { spawnSync } = require('child_process');
 const commit = (repo) => ({ repo, ref: 'main', sha: 'a'.repeat(40), url: `https://github.com/${repo}/commit/x` });
 const commits = { flow: commit('vaadin/flow'), platform: commit('vaadin/platform') };
 
-for (const { name, results, flow, platform, overall } of [
+for (const { name, needs, flow, platform, overall } of [
   {
-    name: 'all jobs passed',
-    results: { flow: ['success', 'success'], platform: ['success'] },
+    name: 'every component passed',
+    needs: { resolve: { result: 'success' }, flow: { result: 'success' }, platform: { result: 'success' } },
     flow: 'success',
     platform: 'success',
     overall: 'success',
   },
   {
-    name: 'the first job of a component failed and the one after it was skipped',
-    results: { flow: ['failure', 'skipped'], platform: ['skipped'] },
+    name: 'Flow failed, so Platform was skipped',
+    needs: { flow: { result: 'failure' }, 'flow-unit-tests': { result: 'skipped' }, platform: { result: 'skipped' } },
     flow: 'failure',
     platform: 'skipped',
     overall: 'failure',
   },
   {
-    name: 'a later job of a component failed',
-    results: { flow: ['success', 'failure'], platform: ['success'] },
+    name: 'the unit tests of Flow failed',
+    needs: { flow: { result: 'success' }, 'flow-unit-tests': { result: 'failure' }, platform: { result: 'success' } },
     flow: 'failure',
     platform: 'success',
     overall: 'failure',
   },
   {
-    name: 'no result for Platform',
-    results: { flow: ['success', 'success'] },
+    name: 'no job for Platform',
+    needs: { flow: { result: 'success' } },
     flow: 'success',
     platform: 'missing',
     overall: 'failure',
@@ -47,7 +47,7 @@ for (const { name, results, flow, platform, overall } of [
 
     const run = spawnSync(
       process.execPath,
-      [path.join(__dirname, 'write-manifest.js'), `--commits=${commitsFile}`, `--results=${JSON.stringify(results)}`, `--out=${out}`],
+      [path.join(__dirname, 'write-manifest.js'), `--commits=${commitsFile}`, `--needs=${JSON.stringify(needs)}`, `--out=${out}`],
       { env }
     );
 

@@ -65,6 +65,14 @@ for (const { name, ref, commits, runs, expected } of [
   });
 }
 
+test('fails when an exact ref is not green, instead of using an older commit', async () => {
+  const runs = { c1: [run('validation.yml', 'c1')] };
+  await assert.rejects(
+    resolveComponent({ ...flow('feature/x'), exact: true }, github('feature/x', [commit('c2'), commit('c1')], runs)),
+    /vaadin\/flow@feature\/x \(c2\) has not passed validation.yml/
+  );
+});
+
 test('fails when no commit is green', async () => {
   await assert.rejects(resolveComponent(flow('main'), github('main', [commit('c2'), commit('c1')], {})), /No commit among/);
 });

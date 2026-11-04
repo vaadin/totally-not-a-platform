@@ -3,12 +3,12 @@
 // each component, into manifest.json: the record of which commit of which
 // repository a run validated, and whether it passed.
 //
-// Usage: write-manifest.js --commits=commits.json --results=<json> [--out=manifest.json]
+// Usage: write-manifest.js --commits=commits.json --needs=<json> [--out=manifest.json]
 //
-// --results maps each component to the results of the jobs that validate
-// it, e.g. {"flow":["success","failure"],"platform":["success"]}. A
-// component succeeds only when all of its jobs did. Exits with 1 unless every
-// component succeeded. When run in GitHub Actions, also writes a table to the
+// --needs is the workflow's `needs` context as JSON. A component is
+// validated by the job named after it, plus `<component>-unit-tests` where
+// there is one, e.g. {"flow":{"result":"success"}}; it succeeds only when
+// all of them did. Exits with 1 unless every component succeeded. When run in GitHub Actions, also writes a table to the
 // job summary.
 
 const fs = require('fs');
@@ -20,22 +20,23 @@ const args = Object.fromEntries(
   })
 );
 const commits = JSON.parse(fs.readFileSync(args.commits || 'commits.json', 'utf8'));
-const results = JSON.parse(args.results || '{}');
+const needs = JSON.parse(args.needs || '{}');
 const out = args.out || 'manifest.json';
 const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
 
-// The first job result that is not a success, so a failed build reports
-// `failure` rather than the `skipped` of the tests after it.
-function componentResult(jobResults) {
-  if (!jobResults || jobResults.length === 0) {
+// The first result of the component's jobs that is not a success, so a
+// failed build reports `failure` rather than the `skipped` of its tests.
+function componentResult(name) {
+  const results = [name, `${name}-unit-tests`].filter((job) => needs[job]).map((job) => needs[job].result);
+  if (results.length === 0) {
     return 'missing';
   }
-  return jobResults.find((result) => result !== 'success') || 'success';
+  return results.find((result) => result !== 'success') || 'success';
 }
 
 const components = {};
 for (const [name, commit] of Object.entries(commits)) {
-  components[name] = { ...commit, result: componentResult(results[name]) };
+  components[name] = { ...commit, result: componentResult(name) };
 }
 const manifest = {
   created: new Date().toISOString(),
