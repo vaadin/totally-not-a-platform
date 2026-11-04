@@ -31,6 +31,10 @@ on:
         description: vaadin/testbench branch, tag or commit (empty = config/components.json)
         required: false
         default: ''
+      hilla-ref:
+        description: vaadin/hilla branch, tag or commit (empty = config/components.json)
+        required: false
+        default: ''
       platform-ref:
         description: vaadin/platform branch, tag or commit (empty = config/components.json)
         required: false
@@ -93,10 +97,11 @@ jobs:
           FLOW_REF: ${{ inputs.flow-ref }}
           FLOW_COMPONENTS_REF: ${{ inputs.flow-components-ref }}
           TESTBENCH_REF: ${{ inputs.testbench-ref }}
+          HILLA_REF: ${{ inputs.hilla-ref }}
           PLATFORM_REF: ${{ inputs.platform-ref }}
         run: |
           node scripts/resolve-commits.js --out=commits.json \
-            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --testbench-ref="$TESTBENCH_REF" --platform-ref="$PLATFORM_REF"
+            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --testbench-ref="$TESTBENCH_REF" --hilla-ref="$HILLA_REF" --platform-ref="$PLATFORM_REF"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commits
@@ -198,6 +203,41 @@ jobs:
       test: >-
         mvn test -pl '!vaadin-testbench-integration-tests,!vaadin-testbench-integration-tests-junit5,!vaadin-testbench-integration-tests-junit6' -Dflow.version="$BUILD_VERSION"
 
+  # Mirrors the init and test-java jobs of vaadin/hilla validation.yml: the
+  # TypeScript packages are built first, as the Java build packages them.
+  # The integration test modules (it-modules profile) and the Gradle plugin,
+  # whose tests run Gradle builds, are left out of the unit tests, as Hilla's
+  # own validation does. The TypeScript unit tests do not run here.
+  hilla:
+    name: Hilla
+    needs: [resolve, flow, testbench]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: hilla
+      repository: vaadin/hilla
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['hilla'].sha }}
+      upstream: flow testbench
+      build-version: ${{ needs.resolve.outputs.build-version }}
+      prepare: npm ci --ignore-scripts && npm run build
+      build: >-
+        mvn install -DskipTests -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -Dflow.version="$BUILD_VERSION" -Dtestbench.version="$BUILD_VERSION"
+
+  hilla-unit-tests:
+    name: Hilla
+    needs: [resolve, flow, testbench, hilla]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: hilla
+      repository: vaadin/hilla
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['hilla'].sha }}
+      upstream: flow testbench
+      build-version: ${{ needs.resolve.outputs.build-version }}
+      prepare: npm ci --ignore-scripts && npm run build
+      test: >-
+        mvn test -P'!it-modules' -pl '!:hilla-gradle-plugin' -Dflow.version="$BUILD_VERSION" -Dtestbench.version="$BUILD_VERSION"
+
   # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
   # differences: versions.json points every component built above at its
   # build (the `platformVersions` of config/components.json), and the unit
@@ -209,7 +249,7 @@ jobs:
   # are not enabled here.
   platform:
     name: Build and test Platform
-    needs: [resolve, flow, flow-components, testbench]
+    needs: [resolve, flow, flow-components, testbench, hilla]
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
@@ -279,7 +319,7 @@ jobs:
 
   manifest:
     name: Write manifest
-    needs: [resolve, flow, flow-components, flow-components-unit-tests, testbench, testbench-unit-tests, platform]
+    needs: [resolve, flow, flow-components, flow-components-unit-tests, testbench, testbench-unit-tests, hilla, hilla-unit-tests, platform]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
