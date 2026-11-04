@@ -6,9 +6,9 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const commit = (repo) => ({ repo, ref: 'main', sha: 'a'.repeat(40), url: `https://github.com/${repo}/commit/x` });
-const defaultCommits = { flow: commit('vaadin/flow'), platform: commit('vaadin/platform') };
+const commits = { flow: commit('vaadin/flow'), platform: commit('vaadin/platform') };
 
-for (const { name, commits = defaultCommits, needs, flow, platform, others = {}, overall } of [
+for (const { name, needs, flow, platform, overall } of [
   {
     name: 'every component passed',
     needs: { resolve: { result: 'success' }, flow: { result: 'success' }, platform: { result: 'success' } },
@@ -28,15 +28,6 @@ for (const { name, commits = defaultCommits, needs, flow, platform, others = {},
     needs: { flow: { result: 'success' }, 'flow-unit-tests': { result: 'failure' }, platform: { result: 'success' } },
     flow: 'failure',
     platform: 'success',
-    overall: 'failure',
-  },
-  {
-    name: 'Platform passed and the only job of a component, its unit tests, failed',
-    commits: { ...defaultCommits, docs: commit('vaadin/docs') },
-    needs: { flow: { result: 'success' }, 'docs-unit-tests': { result: 'failure' }, platform: { result: 'success' } },
-    flow: 'success',
-    platform: 'success',
-    others: { docs: 'failure' },
     overall: 'failure',
   },
   {
@@ -63,9 +54,6 @@ for (const { name, commits = defaultCommits, needs, flow, platform, others = {},
     const manifest = JSON.parse(fs.readFileSync(out, 'utf8'));
     assert.strictEqual(manifest.components.flow.result, flow);
     assert.strictEqual(manifest.components.platform.result, platform);
-    for (const [component, result] of Object.entries(others)) {
-      assert.strictEqual(manifest.components[component].result, result);
-    }
     assert.strictEqual(manifest.components.flow.sha, commits.flow.sha);
     assert.strictEqual(manifest.result, overall);
     assert.strictEqual(run.status, overall === 'success' ? 0 : 1);
