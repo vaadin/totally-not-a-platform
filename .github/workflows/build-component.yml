@@ -69,6 +69,10 @@ permissions:
 env:
   BUILD_VERSION: ${{ inputs.build-version }}
   UPSTREAM: ${{ inputs.upstream }}
+  # A build that also deploys, e.g. with
+  # -DaltDeploymentRepository=staging::default::file://$STAGING, leaves a
+  # Maven repository here, handed on as `<component>-staging`.
+  STAGING: ${{ github.workspace }}/../staging
   # Same retries Flow's validation passes; see vaadin/flow validation.yml.
   MAVEN_ARGS: >-
     -B -ntp
@@ -151,10 +155,20 @@ jobs:
             # shellcheck disable=SC2086 # a list of paths
             tar cf "$COMPONENT-workspace.tar" $CARRY
           fi
+          if [ -d "$STAGING" ]; then
+            tar cf "$COMPONENT-staging.tar" -C "$STAGING" .
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.component }}-maven-artifacts
           path: ${{ inputs.component }}-maven-artifacts.tar
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.component }}-staging
+          path: ${{ inputs.component }}-staging.tar
+          if-no-files-found: ignore
           compression-level: 0
           retention-days: 1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

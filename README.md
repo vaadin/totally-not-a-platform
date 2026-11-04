@@ -27,6 +27,7 @@ Every component before Platform is built by a call of the reusable [build-compon
 1. Add it to `config/components.json`, with `platformVersions` listing the `versions.json` entries (`<section>.<name>`) Platform should take from its build.
 2. Add a `<component>` job (and a `<component>-unit-tests` job) calling `build-component.yml` to `validate.yml`, with the components it builds against as `upstream`, and add the build job to the `needs` of `platform` and both to the `needs` of `manifest`.
 3. Add a `<component>-ref` input and pass it on to `resolve-commits.js`.
+4. Add a `<component>` job with the same `upstream` to `snapshot.yml`, building with `mvn deploy` into the staging repository, and add it to the `needs` of its `platform` job.
 
 It needs a `VAADIN_PRO_KEY` repository secret (`username/proKey`): Platform's production bundles include the commercial components.
 
@@ -57,5 +58,17 @@ Example `manifest.json`:
   }
 }
 ```
+
+## Snapshot
+
+The [Snapshot](.github/workflows/snapshot.yml) workflow publishes what a Validate run validated. It starts when a Validate run started for `main` (not for a pull request) passes, or by hand with the ID of such a run:
+
+```sh
+gh workflow run snapshot.yml -R vaadin/totally-not-a-platform -f validate-run-id=<run id> -f dry-run=true
+```
+
+It reads the commits from that run's `manifest.json` and rebuilds exactly those commits of every component at the Platform version, e.g. `25.4-SNAPSHOT`, in the same order as Validate. No tests run, but the javadoc jars are built. Each component deploys into a staging repository of its own; only when every build has succeeded does the `publish` job merge them, one after the other, into the snapshot repository with `wagon-maven-plugin:merge-maven-repos`, which also merges each `maven-metadata.xml` with the one already there. A Validate run is only published when it ran for `main`, not for a pull request, and validated every component at the ref in `config/components.json`. With `dry-run`, everything is built and staged and nothing is published.
+
+It needs the `MAVEN_SNAPSHOT_DEPLOY_URL` variable and the `SNAPSHOT_USERNAME` / `SNAPSHOT_PASSWORD` secrets, and the `VAADIN_PRO_KEY` secret like Validate. A `workflow_run` trigger only takes effect once the workflow is on the default branch.
 
 The scripts in `scripts/` are plain Node.js without dependencies and can be run locally, e.g. `node scripts/resolve-commits.js`.
