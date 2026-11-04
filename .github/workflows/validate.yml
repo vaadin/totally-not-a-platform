@@ -353,9 +353,11 @@ jobs:
       test: >-
         mvn test -Dflow.version="$BUILD_VERSION" -Dtestbench.version="$BUILD_VERSION"
 
-  # Mirrors the Chrome job of vaadin/web-components unit-tests.yml. Not wired
-  # into Flow Components or Platform yet: they take the web components from
-  # npm, at the versions Flow Components pins.
+  # The Chrome unit tests of vaadin/web-components, for every package:
+  # without --all, its test runner only tests the packages changed since
+  # origin/main, which for a commit on main is none. Not wired into Flow
+  # Components or Platform yet: they take the web components from npm, at
+  # the versions Flow Components pins.
   web-components-unit-tests:
     name: Web Components unit tests
     needs: resolve
@@ -372,7 +374,7 @@ jobs:
       - name: Install dependencies
         run: yarn --frozen-lockfile --no-progress --non-interactive
       - name: Run unit tests
-        run: yarn test
+        run: yarn test --all
 
   # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
   # differences: versions.json points every component built above at its
