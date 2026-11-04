@@ -15,6 +15,7 @@ Components built from source, in build order:
 
 - Flow: newest green commit, no tests
 - Flow Components: against Flow, unit tests with `mvn test`
+- TestBench: against Flow, unit tests with `mvn test`
 - Platform: against all of the above
 
 Every component before Platform is built by a call of the reusable [build-component.yml](.github/workflows/build-component.yml), which installs it at `999.99-SNAPSHOT` against the components built before it and hands its artifacts on; a second call, `<component>-unit-tests`, runs its unit tests in parallel with whatever builds on it next. To add a component:
