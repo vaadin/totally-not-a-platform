@@ -65,6 +65,13 @@ for (const { name, ref, commits, runs, expected } of [
   });
 }
 
+test('resolves an exact ref whose head commit is green', async () => {
+  const runs = { c2: [run('validation.yml', 'c2')], c1: [run('validation.yml', 'c1')] };
+  const resolved = await resolveComponent({ ...flow('feature/x'), exact: true }, github('feature/x', [commit('c2'), commit('c1')], runs));
+  assert.strictEqual(resolved.sha, 'c2');
+  assert.strictEqual(resolved.greenRun, 'https://github.com/vaadin/flow/actions/runs/c2');
+});
+
 test('fails when an exact ref is not green, instead of using an older commit', async () => {
   const runs = { c1: [run('validation.yml', 'c1')] };
   await assert.rejects(

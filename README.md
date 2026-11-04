@@ -26,15 +26,15 @@ Components built from source, in build order:
 Every Maven component before Platform is built by a call of the reusable [build-component.yml](.github/workflows/build-component.yml), which installs it at `999.99-SNAPSHOT` against the components built before it and hands its artifacts on; a second call, `<component>-unit-tests`, runs its unit tests in parallel with whatever builds on it next. (Web Components, which only runs its unit tests, is an inline `web-components-unit-tests` job instead.) To add a Maven component:
 
 1. Add it to `config/components.json`, with `platformVersions` listing the `versions.json` entries (`<section>.<name>`) Platform should take from its build.
-2. Add a `<component>` job (and a `<component>-unit-tests` job) calling `build-component.yml` to `validate.yml`, with the components it builds against as `upstream`, and add both to the `needs` of `platform` and `manifest`.
+2. Add a `<component>` job (and a `<component>-unit-tests` job) calling `build-component.yml` to `validate.yml`, with the components it builds against as `upstream`, and add the build job to the `needs` of `platform` and both to the `needs` of `manifest`.
 3. Add a `<component>-ref` input and pass it on to `resolve-commits.js`.
 
 It needs a `VAADIN_PRO_KEY` repository secret (`username/proKey`): Platform's production bundles include the commercial components.
 
-Nothing is published. Run it from the Actions tab, optionally with a branch, tag or commit for any component (`<component>-ref`), or:
+Nothing is published. Run it from the Actions tab, optionally with a branch, tag or commit for any component (`<component>-ref`). An explicit `flow-ref` must itself have passed Flow's validation; leave it empty to take the newest green commit of the configured branch. For example:
 
 ```sh
-gh workflow run validate.yml -R vaadin/totally-not-a-platform -f flow-ref=main
+gh workflow run validate.yml -R vaadin/totally-not-a-platform -f flow-components-ref=my-branch
 ```
 
 Example `manifest.json`:
@@ -59,4 +59,4 @@ Example `manifest.json`:
 }
 ```
 
-The scripts in `scripts/` are plain Node.js without dependencies and can be run locally, e.g. `node scripts/resolve-commits.js --flow-ref=main`.
+The scripts in `scripts/` are plain Node.js without dependencies and can be run locally, e.g. `node scripts/resolve-commits.js`.

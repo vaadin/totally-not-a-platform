@@ -14,6 +14,11 @@ name: Validate
 # build-component.yml; where its unit tests run, a `<component>-unit-tests`
 # job runs them in parallel with whatever builds on the component next.
 #
+# Web Components is the exception: its unit tests run at the pinned commit,
+# but Flow Components and Platform still take the web components from npm,
+# so its manifest entry says the tests passed, not that the rest was built
+# against it.
+#
 # Nothing is published: the only output is the manifest.json artifact.
 
 on:
