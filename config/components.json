@@ -54,6 +54,10 @@
       "kits.observability-kit-starter"
     ]
   },
+  "web-components": {
+    "repo": "vaadin/web-components",
+    "ref": "main"
+  },
   "platform": {
     "repo": "vaadin/platform",
     "ref": "main"

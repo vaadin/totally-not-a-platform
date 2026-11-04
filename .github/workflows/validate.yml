@@ -47,6 +47,10 @@ on:
         description: vaadin/observability-kit branch, tag or commit (empty = config/components.json)
         required: false
         default: ''
+      web-components-ref:
+        description: vaadin/web-components branch, tag or commit (empty = config/components.json)
+        required: false
+        default: ''
       platform-ref:
         description: vaadin/platform branch, tag or commit (empty = config/components.json)
         required: false
@@ -113,10 +117,11 @@ jobs:
           BROWSERLESS_TEST_REF: ${{ inputs.browserless-test-ref }}
           COLLABORATION_ENGINE_REF: ${{ inputs.collaboration-engine-ref }}
           OBSERVABILITY_KIT_REF: ${{ inputs.observability-kit-ref }}
+          WEB_COMPONENTS_REF: ${{ inputs.web-components-ref }}
           PLATFORM_REF: ${{ inputs.platform-ref }}
         run: |
           node scripts/resolve-commits.js --out=commits.json \
-            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --testbench-ref="$TESTBENCH_REF" --hilla-ref="$HILLA_REF" --browserless-test-ref="$BROWSERLESS_TEST_REF" --collaboration-engine-ref="$COLLABORATION_ENGINE_REF" --observability-kit-ref="$OBSERVABILITY_KIT_REF" --platform-ref="$PLATFORM_REF"
+            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --testbench-ref="$TESTBENCH_REF" --hilla-ref="$HILLA_REF" --browserless-test-ref="$BROWSERLESS_TEST_REF" --collaboration-engine-ref="$COLLABORATION_ENGINE_REF" --observability-kit-ref="$OBSERVABILITY_KIT_REF" --web-components-ref="$WEB_COMPONENTS_REF" --platform-ref="$PLATFORM_REF"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commits
@@ -348,6 +353,27 @@ jobs:
       test: >-
         mvn test -Dflow.version="$BUILD_VERSION" -Dtestbench.version="$BUILD_VERSION"
 
+  # Mirrors the Chrome job of vaadin/web-components unit-tests.yml. Not wired
+  # into Flow Components or Platform yet: they take the web components from
+  # npm, at the versions Flow Components pins.
+  web-components-unit-tests:
+    name: Web Components unit tests
+    needs: resolve
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: vaadin/web-components
+          ref: ${{ fromJSON(needs.resolve.outputs.commits)['web-components'].sha }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: yarn --frozen-lockfile --no-progress --non-interactive
+      - name: Run unit tests
+        run: yarn test
+
   # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
   # differences: versions.json points every component built above at its
   # build (the `platformVersions` of config/components.json), and the unit
@@ -429,7 +455,7 @@ jobs:
 
   manifest:
     name: Write manifest
-    needs: [resolve, flow, flow-components, flow-components-unit-tests, testbench, testbench-unit-tests, hilla, hilla-unit-tests, browserless-test, browserless-test-unit-tests, collaboration-engine, collaboration-engine-unit-tests, observability-kit, observability-kit-unit-tests, platform]
+    needs: [resolve, flow, flow-components, flow-components-unit-tests, testbench, testbench-unit-tests, hilla, hilla-unit-tests, browserless-test, browserless-test-unit-tests, collaboration-engine, collaboration-engine-unit-tests, observability-kit, observability-kit-unit-tests, web-components-unit-tests, platform]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
