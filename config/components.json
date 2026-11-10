@@ -21,6 +21,13 @@
       "vaadin.vaadin-testbench"
     ]
   },
+  "hilla": {
+    "repo": "vaadin/hilla",
+    "ref": "main",
+    "platformVersions": [
+      "core.hilla"
+    ]
+  },
   "platform": {
     "repo": "vaadin/platform",
     "ref": "main"
