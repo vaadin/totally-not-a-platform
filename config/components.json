@@ -42,6 +42,13 @@
       "kits.vaadin-collaboration-engine"
     ]
   },
+  "observability-kit": {
+    "repo": "vaadin/observability-kit",
+    "ref": "main",
+    "platformVersions": [
+      "kits.observability-kit-starter"
+    ]
+  },
   "platform": {
     "repo": "vaadin/platform",
     "ref": "main"
