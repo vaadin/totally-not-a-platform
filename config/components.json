@@ -2,11 +2,17 @@
   "flow": {
     "repo": "vaadin/flow",
     "ref": "main",
-    "greenWorkflow": "validation.yml"
+    "greenWorkflow": "validation.yml",
+    "platformVersions": [
+      "core.flow"
+    ]
   },
   "flow-components": {
     "repo": "vaadin/flow-components",
-    "ref": "main"
+    "ref": "main",
+    "platformVersions": [
+      "core.flow-components"
+    ]
   },
   "platform": {
     "repo": "vaadin/platform",
