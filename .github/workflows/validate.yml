@@ -27,6 +27,10 @@ on:
         description: vaadin/flow-components branch, tag or commit (empty = config/components.json)
         required: false
         default: ''
+      testbench-ref:
+        description: vaadin/testbench branch, tag or commit (empty = config/components.json)
+        required: false
+        default: ''
       platform-ref:
         description: vaadin/platform branch, tag or commit (empty = config/components.json)
         required: false
@@ -88,10 +92,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           FLOW_REF: ${{ inputs.flow-ref }}
           FLOW_COMPONENTS_REF: ${{ inputs.flow-components-ref }}
+          TESTBENCH_REF: ${{ inputs.testbench-ref }}
           PLATFORM_REF: ${{ inputs.platform-ref }}
         run: |
           node scripts/resolve-commits.js --out=commits.json \
-            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --platform-ref="$PLATFORM_REF"
+            --flow-ref="$FLOW_REF" --flow-components-ref="$FLOW_COMPONENTS_REF" --testbench-ref="$TESTBENCH_REF" --platform-ref="$PLATFORM_REF"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commits
@@ -156,6 +161,43 @@ jobs:
         mvn test -Drelease -Dflow.version="$BUILD_VERSION" -DskipSvgChartsBuild
         -T 1C -Dsurefire.parallel=classes -Dsurefire.threadCount=2 -Dsurefire.timeout=600
 
+  # Mirrors the build and unit test jobs of vaadin/testbench validation.yml.
+  # The integration test modules (active unless -Drelease, which would also
+  # drop the UI unit test support modules the unit tests need) are left out
+  # with -pl: even without tests they start Jetty and wait for a dev bundle.
+  # -Dflow.version points the modules at the Flow build; vaadin.version (the
+  # `vaadin` platform pom, provided scope, for the UI unit testing modules)
+  # stays at the published snapshot, as Platform builds after this.
+  testbench:
+    name: TestBench
+    needs: [resolve, flow]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: testbench
+      repository: vaadin/testbench
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['testbench'].sha }}
+      upstream: flow
+      build-version: ${{ needs.resolve.outputs.build-version }}
+      node-version: '20'
+      build: >-
+        mvn install -DskipTests -pl '!vaadin-testbench-integration-tests,!vaadin-testbench-integration-tests-junit5,!vaadin-testbench-integration-tests-junit6' -Dflow.version="$BUILD_VERSION" -T 1C
+
+  testbench-unit-tests:
+    name: TestBench
+    needs: [resolve, flow, testbench]
+    uses: ./.github/workflows/build-component.yml
+    secrets: inherit
+    with:
+      component: testbench
+      repository: vaadin/testbench
+      sha: ${{ fromJSON(needs.resolve.outputs.commits)['testbench'].sha }}
+      upstream: flow
+      build-version: ${{ needs.resolve.outputs.build-version }}
+      node-version: '20'
+      test: >-
+        mvn test -pl '!vaadin-testbench-integration-tests,!vaadin-testbench-integration-tests-junit5,!vaadin-testbench-integration-tests-junit6' -Dflow.version="$BUILD_VERSION"
+
   # Mirrors the `build` job of vaadin/platform pr-validation.yml with two
   # differences: versions.json points every component built above at its
   # build (the `platformVersions` of config/components.json), and the unit
@@ -167,7 +209,7 @@ jobs:
   # are not enabled here.
   platform:
     name: Build and test Platform
-    needs: [resolve, flow, flow-components]
+    needs: [resolve, flow, flow-components, testbench]
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
@@ -237,7 +279,7 @@ jobs:
 
   manifest:
     name: Write manifest
-    needs: [resolve, flow, flow-components, flow-components-unit-tests, platform]
+    needs: [resolve, flow, flow-components, flow-components-unit-tests, testbench, testbench-unit-tests, platform]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-26.04
     timeout-minutes: 5

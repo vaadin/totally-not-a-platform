@@ -14,6 +14,13 @@
       "core.flow-components"
     ]
   },
+  "testbench": {
+    "repo": "vaadin/testbench",
+    "ref": "main",
+    "platformVersions": [
+      "vaadin.vaadin-testbench"
+    ]
+  },
   "platform": {
     "repo": "vaadin/platform",
     "ref": "main"
