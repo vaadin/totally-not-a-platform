@@ -11,12 +11,7 @@
     "repo": "vaadin/flow-components",
     "ref": "main",
     "platformVersions": [
-      "core.flow-components",
-      "core.vaadin-aura-theme",
-      "core.vaadin-lumo-theme",
-      "core.vaadin-messages",
-      "core.vaadin-ordered-layout",
-      "core.vaadin-renderer"
+      "core.flow-components"
     ]
   },
   "testbench": {
